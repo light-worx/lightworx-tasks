@@ -123,12 +123,29 @@ class TaskView extends ItemView {
         const container = this.containerEl.children[1];
         container.empty();
 
-        // 1. Ensure we have meta data before rendering
         if (!this.plugin.metaData) {
             await this.plugin.fetchMeta();
         }
 
-        const statuses = this.plugin.metaData?.statuses || [];
+        // Capture the data inside the 'statuses' key
+        // We use a fallback to empty array if the key doesn't exist
+        let statusData = this.plugin.metaData?.statuses || [];
+
+        // Force it to be an array even if the API returned a single object
+        if (!Array.isArray(statusData)) {
+            // If it's an object (like { "active": {...} }), convert values to array
+            if (typeof statusData === 'object' && statusData !== null) {
+                statusData = Object.values(statusData);
+            } else {
+                statusData = [];
+            }
+        }
+
+        const statuses: any[] = statusData;
+
+        if (statuses.length === 0) {
+            console.warn("Lightworx: Statuses list is empty. Check API response structure.");
+        }
         
         // --- FORM SECTION ---
         const formContainer = container.createDiv({ 
@@ -168,11 +185,10 @@ class TaskView extends ItemView {
         });
         
         const statusSel = controlRow.createEl("select", { style: "flex-grow: 1; height: 32px;" });
-        
-        // DYNAMIC STATUS OPTIONS from your 'task_statuses' table
+    
         statuses.forEach((status: any) => {
             const opt = statusSel.createEl("option", { 
-                text: status.label, 
+                text: status.label || status.id, 
                 value: status.id 
             });
             if (status.id === this.currentStatus) opt.selected = true;
