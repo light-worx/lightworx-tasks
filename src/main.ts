@@ -100,7 +100,7 @@ class TaskView extends ItemView {
     currentTitle: string = "";
     currentDesc: string = "";
     currentEmail: string = "";
-    currentStatus: string = "active";
+    currentStatus: string = "";
 
     constructor(leaf: WorkspaceLeaf, plugin: MyTaskPlugin) { super(leaf); this.plugin = plugin; }
     getViewType() { return VIEW_TYPE_TASKS; }
@@ -109,103 +109,86 @@ class TaskView extends ItemView {
 
     async onOpen() { await this.render(); }
 
-    getStatusColor(status: string) {
-        switch (status) {
-            case 'active': return '#2ecc71';
-            case 'waiting': return '#f1c40f';
-            case 'clarify': return '#e67e22';
-            case 'completed': return '#3498db';
-            default: return 'var(--text-muted)';
-        }
-    }
-
     async render() {
         const container = this.containerEl.children[1];
         container.empty();
-
+        
+        // Ensure we actually wait for the data
         if (!this.plugin.metaData) {
+            console.log("Fetching meta...");
             await this.plugin.fetchMeta();
         }
 
-        // Capture the data inside the 'statuses' key
-        // We use a fallback to empty array if the key doesn't exist
-        let statusData = this.plugin.metaData?.statuses || [];
+        // Double check: if it's still empty, try to fetch one more time or log it
+        const statuses = this.plugin.metaData?.statuses || [];
+        console.log("Statuses in render:", statuses);
 
-        // Force it to be an array even if the API returned a single object
-        if (!Array.isArray(statusData)) {
-            // If it's an object (like { "active": {...} }), convert values to array
-            if (typeof statusData === 'object' && statusData !== null) {
-                statusData = Object.values(statusData);
-            } else {
-                statusData = [];
-            }
-        }
-
-        const statuses: any[] = statusData;
-
-        if (statuses.length === 0) {
-            console.warn("Lightworx: Statuses list is empty. Check API response structure.");
-        }
-        
         // --- FORM SECTION ---
         const formContainer = container.createDiv({ 
-            style: "padding: 12px; background: var(--background-secondary); border-radius: 6px; margin: 10px; display: flex; flex-direction: column; gap: 10px; align-items: flex-end;" 
+            style: "padding: 12px; background: var(--background-secondary); border-radius: 6px; margin: 10px; display: flex; flex-direction: column; gap: 10px;" 
         });
         
-        // Row 1: Title
-        const titleRow = formContainer.createDiv({ style: "width: 100%;" });
-        const titleIn = titleRow.createEl("input", { 
-            type: "text", placeholder: "Task title...", 
-            style: "width: 100% !important; min-width: 100% !important; box-sizing: border-box;" 
+        // Title Field (Full Width)
+        const titleIn = formContainer.createEl("input", { 
+            type: "text", 
+            placeholder: "Task title...", 
+            style: "width: 100%; box-sizing: border-box;" 
         });
         titleIn.value = this.currentTitle;
         titleIn.oninput = () => { this.currentTitle = titleIn.value; };
 
-        // Advanced Section
+        // Advanced Section (Hidden by default)
         if (this.showAdvanced) {
-            const advRow = formContainer.createDiv({ style: "width: 100%; display: flex; flex-direction: column; gap: 8px;" });
-            const descIn = advRow.createEl("textarea", { 
+            // Description Field (Full Width)
+            const descIn = formContainer.createEl("textarea", { 
                 placeholder: "Description...", 
-                style: "width: 100% !important; min-width: 100% !important; height: 60px; font-size: 0.8em; box-sizing: border-box; resize: none;" 
+                style: "width: 100%; height: 80px; box-sizing: border-box; resize: none; font-size: 0.9em; margin-top: 5px;" 
             });
             descIn.value = this.currentDesc;
             descIn.oninput = () => { this.currentDesc = descIn.value; };
 
-            const emailIn = advRow.createEl("input", { 
-                type: "email", placeholder: "Assigned Email...", 
-                style: "width: 100% !important; min-width: 100% !important; box-sizing: border-box;" 
+            // Email Field (Full Width)
+            const emailIn = formContainer.createEl("input", { 
+                type: "email", 
+                placeholder: "Assigned Email...", 
+                style: "width: 100%; box-sizing: border-box;" 
             });
-            emailIn.value = this.currentEmail || this.plugin.settings.defaultEmail;
+            emailIn.value = this.currentEmail;
             emailIn.oninput = () => { this.currentEmail = emailIn.value; };
         }
 
-        // Row 2: Control Row
+        // Control Row (Select and Buttons)
         const controlRow = formContainer.createDiv({ 
-            style: "display: flex; gap: 6px; align-items: center; width: 100%; justify-content: flex-end;" 
-        });
-        
-        const statusSel = controlRow.createEl("select", { style: "flex-grow: 1; height: 32px;" });
-    
-        statuses.forEach((status: any) => {
-            const opt = statusSel.createEl("option", { 
-                text: status.label || status.id, 
-                value: status.label 
-            });
-            if (status.label === this.currentStatus) opt.selected = true;
+            style: "display: flex; gap: 8px; align-items: center; justify-content: space-between;" 
         });
 
-        statusSel.onchange = () => {
-            this.currentStatus = statusSel.value;
-            // Optional: new Notice(`Status changed to ${this.currentStatus}`);
-        };
-        
-        // If currentStatus is empty/default, set it to the first available status id
+        // 1. If currentStatus is empty (first load), set it to the first available label
         if (!this.currentStatus && statuses.length > 0) {
-            this.currentStatus = statuses[0].id;
+            this.currentStatus = statuses[0].label;
         }
 
+        const statusSel = controlRow.createEl("select", { style: "flex-grow: 1;" });
+
+        statuses.forEach((status: any) => {
+            const opt = statusSel.createEl("option", { 
+                text: status.label, 
+                value: status.label // Explicitly using label as the value
+            });
+            
+            // Use case-insensitive comparison to be safe
+            if (status.label === this.currentStatus) {
+                opt.selected = true;
+                opt.setAttribute("selected", "selected");
+            }
+        });
+
+        statusSel.onchange = () => { 
+            this.currentStatus = statusSel.value; 
+        };
+
         const toggleBtn = controlRow.createEl("button", { 
-            text: this.showAdvanced ? "–" : "+", style: "width: 35px; height: 32px;" 
+            text: this.showAdvanced ? "Collapse" : "Expand", // Text is often clearer than symbols
+            style: "font-size: 0.8em;"
         });
         toggleBtn.onclick = () => { 
             this.showAdvanced = !this.showAdvanced; 
@@ -214,16 +197,21 @@ class TaskView extends ItemView {
 
         const actionBtn = controlRow.createEl("button", { 
             text: this.editingTaskId ? "Save" : "Add", 
-            cls: "mod-cta", style: "height: 32px; padding: 0 15px;" 
+            cls: "mod-cta" 
         });
-
+        
+        // After saving, reset showAdvanced to false
         actionBtn.onclick = async () => {
-            if (!this.currentTitle) return;
-            const payload = { 
-                title: this.currentTitle, 
-                description: this.currentDesc, 
-                assigned_email: this.currentEmail || this.plugin.settings.defaultEmail, 
-                status: this.currentStatus 
+            if (!this.currentTitle.trim()) {
+                new Notice("Title is required");
+                return;
+            }
+
+            const payload = {
+                title: this.currentTitle,
+                description: this.currentDesc,
+                assigned_email: this.currentEmail || this.plugin.settings.defaultEmail,
+                status: this.currentStatus // This will now send the Label
             };
 
             try {
@@ -234,12 +222,18 @@ class TaskView extends ItemView {
                     await this.plugin.apiRequest('tasks', 'POST', payload);
                     new Notice("Task added");
                 }
+
                 // Reset form
                 this.editingTaskId = null;
-                this.currentTitle = ""; this.currentDesc = ""; this.currentEmail = ""; this.currentStatus = "active";
-                this.render();
+                this.currentTitle = "";
+                this.currentDesc = "";
+                this.currentEmail = this.plugin.settings.defaultEmail;
+                this.showAdvanced = false;
+                
+                await this.render();
             } catch (e) {
-                new Notice("Error saving task.");
+                new Notice("Failed to save task");
+                console.error(e);
             }
         };
 
@@ -262,7 +256,7 @@ class TaskView extends ItemView {
 
             tasks.forEach((task: any) => {
                 // Find the color from our meta data
-                const statusInfo = statuses.find((s: any) => s.id === task.status);
+                const statusInfo = statuses.find((s: any) => s.label === task.status);
                 const statusColor = statusInfo?.colour || 'var(--text-muted)';
 
                 const taskItem = new Setting(listContainer)
@@ -274,7 +268,7 @@ class TaskView extends ItemView {
                             this.currentDesc = task.description || "";
                             this.currentEmail = task.assigned_email || "";
                             this.currentStatus = task.status;
-                            this.showAdvanced = true;
+                            this.showAdvanced = !!task.description;
                             this.render();
                         });
                     })
@@ -309,6 +303,10 @@ class TaskView extends ItemView {
         } catch (e) {
             container.createEl("p", { text: "Error loading tasks." });
         }
+    }
+
+    async fetchMeta() {
+        this.metaData = await this.apiRequest('tasks/meta');
     }
 }
 
