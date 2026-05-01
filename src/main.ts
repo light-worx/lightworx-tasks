@@ -193,6 +193,11 @@ class TaskView extends ItemView {
             });
             if (status.id === this.currentStatus) opt.selected = true;
         });
+
+        statusSel.onchange = () => {
+            this.currentStatus = statusSel.value;
+            // Optional: new Notice(`Status changed to ${this.currentStatus}`);
+        };
         
         // If currentStatus is empty/default, set it to the first available status id
         if (!this.currentStatus && statuses.length > 0) {
