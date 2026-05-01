@@ -82,10 +82,14 @@ export default class MyTaskPlugin extends Plugin {
 
 class TaskView extends ItemView {
     plugin: MyTaskPlugin;
-    showAdvanced: boolean = false; // Toggle state
+    showAdvanced: boolean = false;
+    editingTaskId: string | null = null; // Track if we are editing
 
-    currentDescEl: HTMLTextAreaElement | null = null;
-    currentEmailEl: HTMLInputElement | null = null;
+    // Persistent values for the form
+    currentTitle: string = "";
+    currentDesc: string = "";
+    currentEmail: string = "";
+    currentStatus: string = "active";
 
     constructor(leaf: WorkspaceLeaf, plugin: MyTaskPlugin) { super(leaf); this.plugin = plugin; }
     getViewType() { return VIEW_TYPE_TASKS; }
@@ -104,126 +108,160 @@ class TaskView extends ItemView {
         }
     }
 
-	async render() {
-		const container = this.containerEl.children[1];
-		container.empty();
-		
-		// --- FORM SECTION ---
-		// Added align-items: flex-end to push smaller items to the right
-		const formContainer = container.createDiv({ 
-			style: "padding: 12px; background: var(--background-secondary); border-radius: 6px; margin: 10px; display: flex; flex-direction: column; gap: 10px; align-items: flex-end;" 
-		});
-		
-		// Row 1: Title
-		const titleRow = formContainer.createDiv({ style: "width: 100%;" });
-		const titleIn = titleRow.createEl("input", { 
-			type: "text", 
-			placeholder: "Task title...", 
-			style: "width: 100% !important; min-width: 100% !important; box-sizing: border-box;" 
-		});
+    async render() {
+        const container = this.containerEl.children[1];
+        container.empty();
+        
+        // --- FORM SECTION ---
+        const formContainer = container.createDiv({ 
+            style: "padding: 12px; background: var(--background-secondary); border-radius: 6px; margin: 10px; display: flex; flex-direction: column; gap: 10px; align-items: flex-end;" 
+        });
+        
+        // Row 1: Title
+        const titleRow = formContainer.createDiv({ style: "width: 100%;" });
+        const titleIn = titleRow.createEl("input", { 
+            type: "text", placeholder: "Task title...", 
+            style: "width: 100% !important; min-width: 100% !important; box-sizing: border-box;" 
+        });
+        titleIn.value = this.currentTitle;
+        titleIn.oninput = () => { this.currentTitle = titleIn.value; };
 
-		// Advanced Section
-		if (this.showAdvanced) {
-			const advRow = formContainer.createDiv({ style: "width: 100%; display: flex; flex-direction: column; gap: 8px;" });
-			this.currentDescEl = advRow.createEl("textarea", { 
-				placeholder: "Description...", 
-				style: "width: 100% !important; min-width: 100% !important; height: 60px; font-size: 0.8em; box-sizing: border-box; resize: none;" 
-			});
-			this.currentEmailEl = advRow.createEl("input", { 
-				type: "email", 
-				placeholder: "Assigned Email...", 
-				style: "width: 100% !important; min-width: 100% !important; box-sizing: border-box;" 
-			});
-			this.currentEmailEl.value = this.plugin.settings.defaultEmail;
-		}
+        // Advanced Section
+        if (this.showAdvanced) {
+            const advRow = formContainer.createDiv({ style: "width: 100%; display: flex; flex-direction: column; gap: 8px;" });
+            const descIn = advRow.createEl("textarea", { 
+                placeholder: "Description...", 
+                style: "width: 100% !important; min-width: 100% !important; height: 60px; font-size: 0.8em; box-sizing: border-box; resize: none;" 
+            });
+            descIn.value = this.currentDesc;
+            descIn.oninput = () => { this.currentDesc = descIn.value; };
 
-		// Row 2: Control Row
-		// justify-content: flex-end ensures that if they don't fill the width, they sit on the right
-		const controlRow = formContainer.createDiv({ 
-			style: "display: flex; gap: 6px; align-items: center; width: 100%; justify-content: flex-end;" 
-		});
-		
-		const statusSel = controlRow.createEl("select", { 
-			style: "flex-grow: 1; height: 32px; min-width: 0; box-sizing: border-box;" 
-		});
-		['active', 'waiting', 'clarify', 'completed'].forEach(s => {
-			statusSel.createEl("option", { text: s, value: s });
-		});
+            const emailIn = advRow.createEl("input", { 
+                type: "email", placeholder: "Assigned Email...", 
+                style: "width: 100% !important; min-width: 100% !important; box-sizing: border-box;" 
+            });
+            emailIn.value = this.currentEmail || this.plugin.settings.defaultEmail;
+            emailIn.oninput = () => { this.currentEmail = emailIn.value; };
+        }
 
-		const toggleBtn = controlRow.createEl("button", { 
-			text: this.showAdvanced ? "–" : "+", 
-			style: "width: 35px; height: 32px; flex-shrink: 0;" 
-		});
-		toggleBtn.onclick = () => { this.showAdvanced = !this.showAdvanced; this.render(); };
+        // Row 2: Control Row
+        const controlRow = formContainer.createDiv({ 
+            style: "display: flex; gap: 6px; align-items: center; width: 100%; justify-content: flex-end;" 
+        });
+        
+        const statusSel = controlRow.createEl("select", { style: "flex-grow: 1; height: 32px;" });
+        ['active', 'waiting', 'clarify', 'completed'].forEach(s => {
+            const opt = statusSel.createEl("option", { text: s, value: s });
+            if (s === this.currentStatus) opt.selected = true;
+        });
+        statusSel.onchange = () => { this.currentStatus = statusSel.value; };
 
-		const addBtn = controlRow.createEl("button", { 
-			text: "Add", 
-			cls: "mod-cta", 
-			style: "height: 32px; padding: 0 20px; flex-shrink: 0;" 
-		});
+        const toggleBtn = controlRow.createEl("button", { 
+            text: this.showAdvanced ? "–" : "+", style: "width: 35px; height: 32px;" 
+        });
+        toggleBtn.onclick = () => { 
+            this.showAdvanced = !this.showAdvanced; 
+            this.render(); 
+        };
 
-		addBtn.onclick = async () => {
-			if (!titleIn.value) return;
-			try {
-				await this.plugin.apiRequest('tasks', 'POST', { 
-					title: titleIn.value,
-					description: this.showAdvanced ? this.currentDescEl?.value : "",
-					assigned_email: this.showAdvanced ? this.currentEmailEl?.value : this.plugin.settings.defaultEmail,
-					status: statusSel.value
-				});
-				titleIn.value = "";
-				this.render();
-			} catch (e) {
-				new Notice("Error saving task.");
-			}
-		};
+        const actionBtn = controlRow.createEl("button", { 
+            text: this.editingTaskId ? "Save" : "Add", 
+            cls: "mod-cta", style: "height: 32px; padding: 0 15px;" 
+        });
 
-		container.createEl("hr", { style: "margin: 5px 10px;" });
+        actionBtn.onclick = async () => {
+            if (!this.currentTitle) return;
+            const payload = { 
+                title: this.currentTitle, 
+                description: this.currentDesc, 
+                assigned_email: this.currentEmail || this.plugin.settings.defaultEmail, 
+                status: this.currentStatus 
+            };
 
-		// --- LIST SECTION (Remains the same as previous) ---
-		try {
-			const res = await this.plugin.apiRequest('tasks');
-			const tasks = res.data || [];
-			const listContainer = container.createDiv({ style: "padding: 0 10px;" });
+            try {
+                if (this.editingTaskId) {
+                    await this.plugin.apiRequest(`tasks/${this.editingTaskId}`, 'PUT', payload);
+                    new Notice("Task updated");
+                } else {
+                    await this.plugin.apiRequest('tasks', 'POST', payload);
+                    new Notice("Task added");
+                }
+                // Reset form
+                this.editingTaskId = null;
+                this.currentTitle = ""; this.currentDesc = ""; this.currentEmail = ""; this.currentStatus = "active";
+                this.render();
+            } catch (e) {
+                new Notice("Error saving task.");
+            }
+        };
 
-			tasks.forEach((task: any) => {
-				const taskItem = new Setting(listContainer)
-					.setName(task.title)
-					.addExtraButton(btn => {
-						btn.setIcon("trash").onClick(async () => {
-							if(confirm("Delete task?")) {
-								await this.plugin.apiRequest(`tasks/${task.id}`, 'DELETE');
-								this.render();
-							}
-						});
-					});
+        if (this.editingTaskId) {
+            const cancelBtn = controlRow.createEl("button", { text: "Cancel", style: "height: 32px;" });
+            cancelBtn.onclick = () => {
+                this.editingTaskId = null;
+                this.currentTitle = ""; this.currentDesc = ""; this.currentEmail = "";
+                this.render();
+            };
+        }
 
-				taskItem.settingEl.style.padding = "2px 0";
-				taskItem.settingEl.style.border = "none";
-				taskItem.settingEl.style.minHeight = "auto"; 
-				
-				const nameEl = taskItem.nameEl;
-				nameEl.style.fontSize = "0.85em";
-				nameEl.style.display = "flex";
-				nameEl.style.alignItems = "center";
-				nameEl.style.gap = "8px";
+        container.createEl("hr", { style: "margin: 5px 10px;" });
 
-				const dot = document.createElement("div");
-				Object.assign(dot.style, {
-					width: "7px", height: "7px", borderRadius: "50%",
-					backgroundColor: this.getStatusColor(task.status), flexShrink: "0"
-				});
-				nameEl.prepend(dot);
+        // --- LIST SECTION ---
+        try {
+            const res = await this.plugin.apiRequest('tasks');
+            const tasks = res.data || [];
+            const listContainer = container.createDiv({ style: "padding: 0 10px;" });
 
-				if (task.status === 'completed') {
-					nameEl.style.textDecoration = "line-through";
-					nameEl.style.color = "var(--text-muted)";
-				}
-			});
-		} catch (e) {
-			container.createEl("p", { text: "Error loading tasks." });
-		}
-	}
+            tasks.forEach((task: any) => {
+                const taskItem = new Setting(listContainer)
+                    .setName(task.title)
+                    .addExtraButton(btn => {
+                        btn.setIcon("pencil").setTooltip("Edit").onClick(() => {
+                            this.editingTaskId = task.id;
+                            this.currentTitle = task.title;
+                            this.currentDesc = task.description || "";
+                            this.currentEmail = task.assigned_email || "";
+                            this.currentStatus = task.status;
+                            this.showAdvanced = true; // Show fields so user can see what they are editing
+                            this.render();
+                        });
+                    })
+                    .addExtraButton(btn => {
+                        btn.setIcon("trash").onClick(async () => {
+                            if(confirm("Delete task?")) {
+                                await this.plugin.apiRequest(`tasks/${task.id}`, 'DELETE');
+                                this.render();
+                            }
+                        });
+                    });
+
+                // Compact layout styling
+                taskItem.settingEl.style.padding = "2px 0";
+                taskItem.settingEl.style.border = "none";
+                taskItem.settingEl.style.minHeight = "auto"; 
+                
+                const nameEl = taskItem.nameEl;
+                nameEl.style.fontSize = "0.85em";
+                nameEl.style.display = "flex";
+                nameEl.style.alignItems = "center";
+                nameEl.style.gap = "8px";
+
+                const dot = document.createElement("div");
+                Object.assign(dot.style, {
+                    width: "7px", height: "7px", borderRadius: "50%",
+                    backgroundColor: this.getStatusColor(task.status), flexShrink: "0"
+                });
+                nameEl.prepend(dot);
+
+                if (task.status === 'completed') {
+                    nameEl.style.textDecoration = "line-through";
+                    nameEl.style.color = "var(--text-muted)";
+                }
+            });
+        } catch (e) {
+            container.createEl("p", { text: "Error loading tasks." });
+        }
+    }
 }
 
 class MyTasksSettingTab extends PluginSettingTab {
