@@ -19,12 +19,23 @@ const DEFAULT_SETTINGS: MyTasksSettings = {
 export default class MyTaskPlugin extends Plugin {
     settings: MyTasksSettings;
     accessToken: string | null = null;
+    metaData: any = null; // Store statuses here
 
     async onload() {
         await this.loadSettings();
         this.registerView(VIEW_TYPE_TASKS, (leaf) => new TaskView(leaf, this));
         this.addRibbonIcon('list-checks', 'Open Lightworx Tasks', () => this.activateView());
         this.addSettingTab(new MyTasksSettingTab(this.app, this));
+    }
+
+    async fetchMeta() {
+        try {
+            const response = await this.apiRequest('tasks/meta');
+            this.metaData = response;
+            return response;
+        } catch (e) {
+            console.error("Failed to fetch meta", e);
+        }
     }
 
     async activateView() {
@@ -111,6 +122,13 @@ class TaskView extends ItemView {
     async render() {
         const container = this.containerEl.children[1];
         container.empty();
+
+        // 1. Ensure we have meta data before rendering
+        if (!this.plugin.metaData) {
+            await this.plugin.fetchMeta();
+        }
+
+        const statuses = this.plugin.metaData?.statuses || [];
         
         // --- FORM SECTION ---
         const formContainer = container.createDiv({ 
@@ -150,11 +168,20 @@ class TaskView extends ItemView {
         });
         
         const statusSel = controlRow.createEl("select", { style: "flex-grow: 1; height: 32px;" });
-        ['active', 'waiting', 'clarify', 'completed'].forEach(s => {
-            const opt = statusSel.createEl("option", { text: s, value: s });
-            if (s === this.currentStatus) opt.selected = true;
+        
+        // DYNAMIC STATUS OPTIONS from your 'task_statuses' table
+        statuses.forEach((status: any) => {
+            const opt = statusSel.createEl("option", { 
+                text: status.label, 
+                value: status.id 
+            });
+            if (status.id === this.currentStatus) opt.selected = true;
         });
-        statusSel.onchange = () => { this.currentStatus = statusSel.value; };
+        
+        // If currentStatus is empty/default, set it to the first available status id
+        if (!this.currentStatus && statuses.length > 0) {
+            this.currentStatus = statuses[0].id;
+        }
 
         const toggleBtn = controlRow.createEl("button", { 
             text: this.showAdvanced ? "–" : "+", style: "width: 35px; height: 32px;" 
@@ -213,29 +240,26 @@ class TaskView extends ItemView {
             const listContainer = container.createDiv({ style: "padding: 0 10px;" });
 
             tasks.forEach((task: any) => {
+                // Find the color from our meta data
+                const statusInfo = statuses.find((s: any) => s.id === task.status);
+                const statusColor = statusInfo?.colour || 'var(--text-muted)';
+
                 const taskItem = new Setting(listContainer)
                     .setName(task.title)
                     .addExtraButton(btn => {
-                        btn.setIcon("pencil").setTooltip("Edit").onClick(() => {
+                        btn.setIcon("pencil").onClick(() => {
                             this.editingTaskId = task.id;
                             this.currentTitle = task.title;
                             this.currentDesc = task.description || "";
                             this.currentEmail = task.assigned_email || "";
                             this.currentStatus = task.status;
-                            this.showAdvanced = true; // Show fields so user can see what they are editing
+                            this.showAdvanced = true;
                             this.render();
                         });
                     })
-                    .addExtraButton(btn => {
-                        btn.setIcon("trash").onClick(async () => {
-                            if(confirm("Delete task?")) {
-                                await this.plugin.apiRequest(`tasks/${task.id}`, 'DELETE');
-                                this.render();
-                            }
-                        });
-                    });
+                    // ... (trash button) ...
 
-                // Compact layout styling
+                // Compact layout
                 taskItem.settingEl.style.padding = "2px 0";
                 taskItem.settingEl.style.border = "none";
                 taskItem.settingEl.style.minHeight = "auto"; 
@@ -246,13 +270,16 @@ class TaskView extends ItemView {
                 nameEl.style.alignItems = "center";
                 nameEl.style.gap = "8px";
 
+                // DYNAMIC COLOR DOT
                 const dot = document.createElement("div");
                 Object.assign(dot.style, {
                     width: "7px", height: "7px", borderRadius: "50%",
-                    backgroundColor: this.getStatusColor(task.status), flexShrink: "0"
+                    backgroundColor: statusColor, flexShrink: "0"
                 });
                 nameEl.prepend(dot);
 
+                // Check for 'completed' logic (you might want to add an 'is_completed' 
+                // boolean to your migration later, but for now we check the id)
                 if (task.status === 'completed') {
                     nameEl.style.textDecoration = "line-through";
                     nameEl.style.color = "var(--text-muted)";

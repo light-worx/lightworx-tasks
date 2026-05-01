@@ -1,7 +1,7 @@
 {
 	"id": "lightworx-tasks",
 	"name": "Lightworx tasks",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"minAppVersion": "0.15.0",
 	"description": "Obsidian plugin to access my tasks API.",
 	"author": "Michael Bishop",
