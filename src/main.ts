@@ -191,7 +191,7 @@ class TaskView extends ItemView {
                 text: status.label || status.id, 
                 value: status.label 
             });
-            if (status.id === this.currentStatus) opt.selected = true;
+            if (status.label === this.currentStatus) opt.selected = true;
         });
 
         statusSel.onchange = () => {
