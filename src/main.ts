@@ -189,7 +189,7 @@ class TaskView extends ItemView {
         statuses.forEach((status: any) => {
             const opt = statusSel.createEl("option", { 
                 text: status.label || status.id, 
-                value: status.id 
+                value: status.label 
             });
             if (status.id === this.currentStatus) opt.selected = true;
         });
