@@ -6,20 +6,21 @@ interface MyTasksSettings {
     apiUrl: string;
     clientId: string;
     clientSecret: string;
-    defaultEmail: string;
+    userEmail: string;
 }
 
 const DEFAULT_SETTINGS: MyTasksSettings = {
     apiUrl: 'https://tasks.lightworx.co.za',
     clientId: '',
     clientSecret: '',
-    defaultEmail: ''
+    userEmail: ''
 }
 
 export default class MyTaskPlugin extends Plugin {
     settings: MyTasksSettings;
     accessToken: string | null = null;
     metaData: any = null;
+    projects: any[] = [];
 
     async onload() {
         await this.loadSettings();
@@ -30,11 +31,26 @@ export default class MyTaskPlugin extends Plugin {
 
     async fetchMeta() {
         try {
-            const response = await this.apiRequest('tasks/meta');
-            this.metaData = response;
-            return response;
+            // New endpoint: /api/meta/task-statuses
+            // Returns a flat array of status objects, not { statuses: [...] }
+            const response = await this.apiRequest('meta/task-statuses');
+            this.metaData = { statuses: response.statuses ?? response };
         } catch (e) {
             console.error("Failed to fetch meta", e);
+        }
+    }
+
+    async fetchProjects() {
+        try {
+            // Pass owner_email so the API also returns private projects owned by this user
+            const email = this.settings.userEmail;
+            const qs = email ? `?owner_email=${encodeURIComponent(email)}` : '';
+            const response = await this.apiRequest(`projects${qs}`);
+            // Projects endpoint returns a plain array (no pagination wrapper)
+            this.projects = Array.isArray(response) ? response : (response.data ?? []);
+        } catch (e) {
+            console.error("Failed to fetch projects", e);
+            this.projects = [];
         }
     }
 
@@ -48,8 +64,9 @@ export default class MyTaskPlugin extends Plugin {
     }
 
     async getAccessToken(): Promise<string> {
+        // Updated token endpoint: /api/auth/token (was /api/clients/token)
         const response = await requestUrl({
-            url: `${this.settings.apiUrl}/api/clients/token`,
+            url: `${this.settings.apiUrl}/api/auth/token`,
             method: 'POST',
             contentType: 'application/json',
             body: JSON.stringify({ client_id: this.settings.clientId, client_secret: this.settings.clientSecret })
@@ -98,11 +115,10 @@ class TaskView extends ItemView {
 
     currentTitle: string = "";
     currentDesc: string = "";
-    currentEmail: string = "";
     currentStatus: string = "";
+    currentProjectId: string = "";
 
-    // Stable references to the task list container and the cached API data,
-    // so search/filter can redraw just that region without touching the form.
+    // Stable references kept so search/filter can redraw just the list region.
     private taskListEl: HTMLElement | null = null;
     private cachedTasks: any[] = [];
 
@@ -118,11 +134,13 @@ class TaskView extends ItemView {
         container.empty();
         this.taskListEl = null;
 
-        if (!this.plugin.metaData) {
-            await this.plugin.fetchMeta();
-        }
+        // Fetch meta and projects in parallel on first load
+        const metaPromise = this.plugin.metaData ? Promise.resolve() : this.plugin.fetchMeta();
+        const projectsPromise = this.plugin.fetchProjects();
+        await Promise.all([metaPromise, projectsPromise]);
 
         const statuses = this.plugin.metaData?.statuses || [];
+        const projects = this.plugin.projects || [];
 
         const wrapper = container.createDiv({
             attr: { style: "padding: 10px; display: flex; flex-direction: column; gap: 8px;" }
@@ -160,17 +178,28 @@ class TaskView extends ItemView {
         titleIn.value = this.currentTitle;
         titleIn.oninput = () => { this.currentTitle = titleIn.value; };
 
-        // Advanced fields
+        // Advanced fields — description + project
         if (this.showAdvanced) {
             const descIn = formContainer.createEl("textarea", { placeholder: "Description..." });
             descIn.style.cssText = "width: 100%; height: 80px; font-size: var(--font-ui-small); box-sizing: border-box; resize: none;";
             descIn.value = this.currentDesc;
             descIn.oninput = () => { this.currentDesc = descIn.value; };
 
-            const emailIn = formContainer.createEl("input", { type: "email", placeholder: "Assigned email..." });
-            emailIn.style.cssText = inputStyle;
-            emailIn.value = this.currentEmail;
-            emailIn.oninput = () => { this.currentEmail = emailIn.value; };
+            // Project selector — only shown if the API returned projects
+            if (projects.length > 0) {
+                const projectSel = formContainer.createEl("select");
+                projectSel.style.cssText = inputStyle;
+
+                const noneOpt = projectSel.createEl("option", { text: "No project", value: "" });
+                noneOpt.selected = !this.currentProjectId;
+
+                projects.forEach((p: any) => {
+                    const opt = projectSel.createEl("option", { text: p.name, value: p.id });
+                    if (p.id === this.currentProjectId) opt.selected = true;
+                });
+
+                projectSel.onchange = () => { this.currentProjectId = projectSel.value; };
+            }
         }
 
         // Control row: status | more/less | [cancel] | add/save
@@ -198,7 +227,10 @@ class TaskView extends ItemView {
             cancelBtn.style.cssText = "height: 30px; font-size: var(--font-ui-small); padding: 0 8px;";
             cancelBtn.onclick = () => {
                 this.editingTaskId = null;
-                this.currentTitle = ""; this.currentDesc = ""; this.currentEmail = "";
+                this.currentTitle = "";
+                this.currentDesc = "";
+                this.currentProjectId = "";
+                this.showAdvanced = false;
                 this.render();
             };
         }
@@ -214,12 +246,17 @@ class TaskView extends ItemView {
                 return;
             }
 
-            const payload = {
+            const payload: any = {
                 title: this.currentTitle,
-                description: this.currentDesc,
-                assigned_email: this.currentEmail || this.plugin.settings.defaultEmail,
-                status: this.currentStatus
+                description: this.currentDesc || null,
+                assigned_email: this.plugin.settings.userEmail,
+                status: this.currentStatus,
             };
+
+            // Only include project_id if one is selected
+            if (this.currentProjectId) {
+                payload.project_id = this.currentProjectId;
+            }
 
             try {
                 if (this.editingTaskId) {
@@ -233,7 +270,7 @@ class TaskView extends ItemView {
                 this.editingTaskId = null;
                 this.currentTitle = "";
                 this.currentDesc = "";
-                this.currentEmail = this.plugin.settings.defaultEmail;
+                this.currentProjectId = "";
                 this.showAdvanced = false;
 
                 await this.render();
@@ -265,9 +302,8 @@ class TaskView extends ItemView {
         searchIn.style.cssText = "width: 110px; height: 26px; font-size: var(--font-ui-small); box-sizing: border-box;";
         searchIn.value = this.searchQuery;
         searchIn.oninput = () => {
-            // Update state and redraw only the list — search input keeps focus.
             this.searchQuery = searchIn.value.toLowerCase();
-            this.renderTaskList(statuses);
+            this.renderTaskList(statuses, projects);
         };
 
         const filterSel = listHeader.createEl("select");
@@ -279,16 +315,16 @@ class TaskView extends ItemView {
         });
         filterSel.onchange = () => {
             this.filterStatus = filterSel.value;
-            this.renderTaskList(statuses);
+            this.renderTaskList(statuses, projects);
         };
 
         // ── TASK LIST CONTAINER ───────────────────────────────────────────────
-        // A stable div that renderTaskList() will empty+refill in place.
         this.taskListEl = wrapper.createDiv();
 
-        // Fetch once and cache, then hand off to renderTaskList.
         try {
-            const res = await this.plugin.apiRequest('tasks');
+            const email = this.plugin.settings.userEmail;
+            const qs = email ? `?assigned_email=${encodeURIComponent(email)}` : '';
+            const res = await this.plugin.apiRequest(`tasks${qs}`);
             this.cachedTasks = res.data || [];
         } catch (e) {
             this.cachedTasks = [];
@@ -296,12 +332,12 @@ class TaskView extends ItemView {
             return;
         }
 
-        this.renderTaskList(statuses);
+        this.renderTaskList(statuses, projects);
     }
 
-    // Redraws only the task list area using cachedTasks. Safe to call without
-    // losing focus on the search input because the form DOM is untouched.
-    private renderTaskList(statuses: any[]) {
+    // Redraws only the task list area. Safe to call without losing focus on
+    // the search input because the form DOM is untouched.
+    private renderTaskList(statuses: any[], projects: any[]) {
         if (!this.taskListEl) return;
         this.taskListEl.empty();
 
@@ -328,13 +364,19 @@ class TaskView extends ItemView {
             const statusColor = statusInfo?.colour || 'var(--text-muted)';
             const isCompleted = task.status?.toLowerCase() === 'completed';
 
+            // Resolve project name for display if the task has one
+            const projectName = task.project_id
+                ? (projects.find((p: any) => p.id === task.project_id)?.name ?? null)
+                : null;
+
             const editAction = () => {
                 this.editingTaskId = task.id;
                 this.currentTitle = task.title;
                 this.currentDesc = task.description || "";
-                this.currentEmail = task.assigned_email || "";
                 this.currentStatus = task.status;
-                this.showAdvanced = !!task.description;
+                this.currentProjectId = task.project_id || "";
+                // Open advanced panel if there's a description or a project set
+                this.showAdvanced = !!(task.description || task.project_id);
                 this.render();
             };
 
@@ -361,22 +403,43 @@ class TaskView extends ItemView {
             nameEl.style.cssText = [
                 "font-size: var(--font-ui-small)",
                 "display: flex",
-                "align-items: center",
-                "gap: 8px",
+                "flex-direction: column",
+                "align-items: flex-start",
+                "gap: 2px",
                 "cursor: pointer",
             ].join("; ");
             nameEl.title = "Edit task";
             nameEl.onclick = editAction;
 
-            if (isCompleted) {
-                nameEl.style.textDecoration = "line-through";
-                nameEl.style.color = "var(--text-muted)";
-            }
+            // Title row: dot + title text
+            const titleRow = nameEl.createDiv();
+            titleRow.style.cssText = "display: flex; align-items: center; gap: 8px;";
 
             const dot = document.createElement("div");
             dot.style.cssText = `width: 7px; height: 7px; border-radius: 50%; background-color: ${statusColor}; flex-shrink: 0;`;
             dot.title = task.status ?? "";
-            nameEl.prepend(dot);
+            titleRow.appendChild(dot);
+
+            const titleText = document.createElement("span");
+            titleText.textContent = task.title;
+            if (isCompleted) {
+                titleText.style.cssText = "text-decoration: line-through; color: var(--text-muted);";
+            }
+            titleRow.appendChild(titleText);
+
+            // Project badge — shown below the title if the task belongs to a project
+            if (projectName) {
+                const badge = nameEl.createEl("span");
+                badge.textContent = projectName;
+                badge.style.cssText = [
+                    "font-size: var(--font-ui-smaller)",
+                    "color: var(--text-muted)",
+                    "background: var(--background-modifier-border)",
+                    "border-radius: var(--radius-s)",
+                    "padding: 1px 5px",
+                    "margin-left: 15px",  // aligns under title text, past the dot
+                ].join("; ");
+            }
         });
     }
 }
@@ -394,10 +457,10 @@ class MyTasksSettingTab extends PluginSettingTab {
         new Setting(containerEl).setName('Client Secret').addText(t => t.setValue(this.plugin.settings.clientSecret).onChange(async v => { this.plugin.settings.clientSecret = v; await this.plugin.saveSettings(); }));
 
         new Setting(containerEl)
-            .setName('Default Assigned Email')
-            .setDesc('Auto-fills this email in the task creator')
-            .addText(t => t.setValue(this.plugin.settings.defaultEmail).onChange(async v => {
-                this.plugin.settings.defaultEmail = v;
+            .setName('User Email')
+            .setDesc('Tasks are fetched and created for this email address')
+            .addText(t => t.setValue(this.plugin.settings.userEmail).onChange(async v => {
+                this.plugin.settings.userEmail = v;
                 await this.plugin.saveSettings();
             }));
     }
