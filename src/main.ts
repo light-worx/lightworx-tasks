@@ -2,6 +2,10 @@ import { App, Plugin, PluginSettingTab, Setting, requestUrl, Notice, ItemView, W
 
 const VIEW_TYPE_TASKS = "lightworx-tasks-view";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface MyTasksSettings {
     apiUrl: string;
     clientId: string;
@@ -15,6 +19,10 @@ const DEFAULT_SETTINGS: MyTasksSettings = {
     clientSecret: '',
     userEmail: ''
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plugin
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default class MyTaskPlugin extends Plugin {
     settings: MyTasksSettings;
@@ -31,8 +39,6 @@ export default class MyTaskPlugin extends Plugin {
 
     async fetchMeta() {
         try {
-            // New endpoint: /api/meta/task-statuses
-            // Returns a flat array of status objects, not { statuses: [...] }
             const response = await this.apiRequest('meta/task-statuses');
             this.metaData = { statuses: response.statuses ?? response };
         } catch (e) {
@@ -42,11 +48,9 @@ export default class MyTaskPlugin extends Plugin {
 
     async fetchProjects() {
         try {
-            // Pass owner_email so the API also returns private projects owned by this user
             const email = this.settings.userEmail;
             const qs = email ? `?owner_email=${encodeURIComponent(email)}` : '';
             const response = await this.apiRequest(`projects${qs}`);
-            // Projects endpoint returns a plain array (no pagination wrapper)
             this.projects = Array.isArray(response) ? response : (response.data ?? []);
         } catch (e) {
             console.error("Failed to fetch projects", e);
@@ -64,7 +68,6 @@ export default class MyTaskPlugin extends Plugin {
     }
 
     async getAccessToken(): Promise<string> {
-        // Updated token endpoint: /api/auth/token (was /api/clients/token)
         const response = await requestUrl({
             url: `${this.settings.apiUrl}/api/auth/token`,
             method: 'POST',
@@ -74,24 +77,17 @@ export default class MyTaskPlugin extends Plugin {
         return response.json.access_token;
     }
 
-    async apiRequest(path: string, method: string = 'GET', body?: any) {
+    async apiRequest(path: string, method: string = 'GET', body?: any): Promise<any> {
         if (!this.accessToken) this.accessToken = await this.getAccessToken();
         try {
             const response = await requestUrl({
                 url: `${this.settings.apiUrl}/api/${path}`,
                 method,
-                headers: {
-                    'Accept': 'application/json',
-                    'Authorization': `Bearer ${this.accessToken}`
-                },
+                headers: { 'Accept': 'application/json', 'Authorization': `Bearer ${this.accessToken}` },
                 contentType: 'application/json',
                 body: body ? JSON.stringify(body) : undefined
             });
-
-            if (response.status === 204 || !response.text) {
-                return {};
-            }
-
+            if (response.status === 204 || !response.text) return {};
             return response.json;
         } catch (e) {
             if (e.status === 401) {
@@ -106,49 +102,225 @@ export default class MyTaskPlugin extends Plugin {
     async saveSettings() { await this.saveData(this.settings); }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared style helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+const S = {
+    input:   "width: 100%; height: 30px; font-size: var(--font-ui-small); box-sizing: border-box;",
+    btnMuted: [
+        "height: 26px",
+        "font-size: var(--font-ui-small)",
+        "color: var(--text-muted)",
+        "background: var(--background-modifier-border)",
+        "border: none",
+        "border-radius: var(--radius-s)",
+        "cursor: pointer",
+        "padding: 0 8px",
+    ].join("; "),
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Root view — renders tab bar and delegates to panes
+// ─────────────────────────────────────────────────────────────────────────────
+
+type Tab = 'tasks' | 'projects';
+
 class TaskView extends ItemView {
     plugin: MyTaskPlugin;
-    showAdvanced: boolean = false;
-    editingTaskId: string | null = null;
-    searchQuery: string = "";
-    filterStatus: string = "all";
+    private activeTab: Tab = 'tasks';
+    private tasksPane: TasksPane;
+    private projectsPane: ProjectsPane;
 
-    currentTitle: string = "";
-    currentDesc: string = "";
-    currentStatus: string = "";
-    currentProjectId: string = "";
+    constructor(leaf: WorkspaceLeaf, plugin: MyTaskPlugin) {
+        super(leaf);
+        this.plugin = plugin;
+        this.tasksPane    = new TasksPane(plugin);
+        this.projectsPane = new ProjectsPane(plugin);
+    }
 
-    // Stable references kept so search/filter can redraw just the list region.
-    private taskListEl: HTMLElement | null = null;
-    private cachedTasks: any[] = [];
-
-    constructor(leaf: WorkspaceLeaf, plugin: MyTaskPlugin) { super(leaf); this.plugin = plugin; }
-    getViewType() { return VIEW_TYPE_TASKS; }
+    getViewType()    { return VIEW_TYPE_TASKS; }
     getDisplayText() { return "Lightworx Tasks"; }
-    getIcon() { return "check-square"; }
+    getIcon()        { return "check-square"; }
 
     async onOpen() { await this.render(); }
 
     async render() {
-        const container = this.containerEl.children[1] as HTMLElement;
+        const root = this.containerEl.children[1] as HTMLElement;
+        root.empty();
+        root.style.cssText = "display: flex; flex-direction: column; height: 100%; overflow: hidden;";
+
+        // ── TAB BAR ───────────────────────────────────────────────────────────
+        const tabBar = root.createDiv();
+        tabBar.style.cssText = [
+            "display: flex",
+            "border-bottom: 1px solid var(--background-modifier-border)",
+            "flex-shrink: 0",
+        ].join("; ");
+
+        const tabStyle = (active: boolean) => [
+            "flex: 1",
+            "padding: 8px 0",
+            "font-size: var(--font-ui-small)",
+            "font-weight: 500",
+            "text-align: center",
+            "cursor: pointer",
+            "border: none",
+            "border-bottom: 2px solid " + (active ? "var(--interactive-accent)" : "transparent"),
+            "background: transparent",
+            "color: " + (active ? "var(--text-normal)" : "var(--text-muted)"),
+            "transition: color 0.15s, border-color 0.15s",
+        ].join("; ");
+
+        const tasksTab    = tabBar.createEl("button", { text: "Tasks" });
+        const projectsTab = tabBar.createEl("button", { text: "Projects" });
+        tasksTab.style.cssText    = tabStyle(this.activeTab === 'tasks');
+        projectsTab.style.cssText = tabStyle(this.activeTab === 'projects');
+
+        // ── PANE CONTAINER ────────────────────────────────────────────────────
+        const paneEl = root.createDiv();
+        paneEl.style.cssText = "flex: 1; overflow-y: auto;";
+
+        const switchTab = async (tab: Tab) => {
+            this.activeTab = tab;
+            tasksTab.style.cssText    = tabStyle(tab === 'tasks');
+            projectsTab.style.cssText = tabStyle(tab === 'projects');
+            paneEl.empty();
+            if (tab === 'tasks')    await this.tasksPane.mount(paneEl);
+            if (tab === 'projects') await this.projectsPane.mount(paneEl);
+        };
+
+        tasksTab.onclick    = () => switchTab('tasks');
+        projectsTab.onclick = () => switchTab('projects');
+
+        // Mount the active pane immediately
+        await switchTab(this.activeTab);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tasks pane
+// ─────────────────────────────────────────────────────────────────────────────
+
+class TasksPane {
+    private plugin: MyTaskPlugin;
+
+    // Form state
+    private showForm: boolean = false;
+    private editingTaskId: string | null = null;
+    private currentTitle: string = "";
+    private currentDesc: string = "";
+    private currentStatus: string = "";
+    private currentProjectId: string = "";
+
+    // List state
+    private searchQuery: string = "";
+    private filterStatus: string = "all";
+    private cachedTasks: any[] = [];
+    private taskListEl: HTMLElement | null = null;
+
+    // Cached for re-renders
+    private statuses: any[] = [];
+    private projects: any[] = [];
+
+    constructor(plugin: MyTaskPlugin) {
+        this.plugin = plugin;
+    }
+
+    async mount(container: HTMLElement) {
         container.empty();
         this.taskListEl = null;
 
-        // Fetch meta and projects in parallel on first load
-        const metaPromise = this.plugin.metaData ? Promise.resolve() : this.plugin.fetchMeta();
+        const metaPromise     = this.plugin.metaData ? Promise.resolve() : this.plugin.fetchMeta();
         const projectsPromise = this.plugin.fetchProjects();
         await Promise.all([metaPromise, projectsPromise]);
 
-        const statuses = this.plugin.metaData?.statuses || [];
-        const projects = this.plugin.projects || [];
+        this.statuses = this.plugin.metaData?.statuses || [];
+        this.projects = this.plugin.projects || [];
+
+        if (!this.currentStatus && this.statuses.length > 0) {
+            this.currentStatus = this.statuses[0].label;
+        }
 
         const wrapper = container.createDiv({
             attr: { style: "padding: 10px; display: flex; flex-direction: column; gap: 8px;" }
         });
 
-        const inputStyle = "width: 100%; height: 30px; font-size: var(--font-ui-small); box-sizing: border-box;";
+        // ── TOOLBAR: search | filter | + ──────────────────────────────────────
+        const toolbar = wrapper.createDiv();
+        toolbar.style.cssText = "display: flex; align-items: center; gap: 6px;";
 
-        // ── SECTION LABEL ─────────────────────────────────────────────────────
+        const searchIn = toolbar.createEl("input", { type: "text", placeholder: "Search…" });
+        searchIn.style.cssText = "flex: 1; height: 26px; font-size: var(--font-ui-small); box-sizing: border-box;";
+        searchIn.value = this.searchQuery;
+        searchIn.oninput = () => {
+            this.searchQuery = searchIn.value.toLowerCase();
+            this.renderTaskList();
+        };
+
+        const filterSel = toolbar.createEl("select");
+        filterSel.style.cssText = "height: 26px; font-size: var(--font-ui-small); max-width: 90px;";
+        filterSel.createEl("option", { text: "All", value: "all" });
+        this.statuses.forEach((s: any) => {
+            const opt = filterSel.createEl("option", { text: s.label, value: s.label });
+            if (this.filterStatus === s.label) opt.selected = true;
+        });
+        filterSel.onchange = () => {
+            this.filterStatus = filterSel.value;
+            this.renderTaskList();
+        };
+
+        const addBtn = toolbar.createEl("button", { text: "+" });
+        addBtn.style.cssText = [
+            "height: 26px",
+            "width: 26px",
+            "font-size: 16px",
+            "line-height: 1",
+            "padding: 0",
+            "border: none",
+            "border-radius: var(--radius-s)",
+            "background: var(--interactive-accent)",
+            "color: var(--text-on-accent)",
+            "cursor: pointer",
+            "flex-shrink: 0",
+        ].join("; ");
+        addBtn.title = "New task";
+        addBtn.onclick = () => {
+            // Toggle form; if opening fresh (not editing), clear state
+            if (!this.showForm || this.editingTaskId) {
+                this.editingTaskId = null;
+                this.currentTitle = "";
+                this.currentDesc = "";
+                this.currentProjectId = "";
+                this.currentStatus = this.statuses[0]?.label ?? "";
+            }
+            this.showForm = !this.showForm;
+            this.mount(container);
+        };
+
+        // ── FORM (shown only when showForm is true) ───────────────────────────
+        if (this.showForm) {
+            this.renderForm(wrapper, container);
+        }
+
+        // ── TASK LIST ─────────────────────────────────────────────────────────
+        this.taskListEl = wrapper.createDiv();
+
+        try {
+            const email = this.plugin.settings.userEmail;
+            const qs    = email ? `?assigned_email=${encodeURIComponent(email)}` : '';
+            const res   = await this.plugin.apiRequest(`tasks${qs}`);
+            this.cachedTasks = res.data || [];
+        } catch (e) {
+            this.cachedTasks = [];
+            this.taskListEl.createEl("p", { text: "Error loading tasks." });
+            return;
+        }
+
+        this.renderTaskList();
+    }
+
+    private renderForm(wrapper: HTMLElement, mountContainer: HTMLElement) {
         const formLabel = wrapper.createEl("p");
         formLabel.style.cssText = [
             "margin: 0",
@@ -160,7 +332,6 @@ class TaskView extends ItemView {
         ].join("; ");
         formLabel.setText(this.editingTaskId ? "Edit task" : "New task");
 
-        // ── FORM ──────────────────────────────────────────────────────────────
         const formContainer = wrapper.createDiv();
         formContainer.style.cssText = [
             "background: var(--background-secondary)",
@@ -174,77 +345,60 @@ class TaskView extends ItemView {
 
         // Title
         const titleIn = formContainer.createEl("input", { type: "text", placeholder: "Task title..." });
-        titleIn.style.cssText = inputStyle;
+        titleIn.style.cssText = S.input;
         titleIn.value = this.currentTitle;
         titleIn.oninput = () => { this.currentTitle = titleIn.value; };
+        // Auto-focus the title field when the form opens
+        setTimeout(() => titleIn.focus(), 0);
 
-        // Advanced fields — description + project
-        if (this.showAdvanced) {
-            const descIn = formContainer.createEl("textarea", { placeholder: "Description..." });
-            descIn.style.cssText = "width: 100%; height: 80px; font-size: var(--font-ui-small); box-sizing: border-box; resize: none;";
-            descIn.value = this.currentDesc;
-            descIn.oninput = () => { this.currentDesc = descIn.value; };
+        // Description
+        const descIn = formContainer.createEl("textarea", { placeholder: "Description (optional)..." });
+        descIn.style.cssText = "width: 100%; height: 60px; font-size: var(--font-ui-small); box-sizing: border-box; resize: none;";
+        descIn.value = this.currentDesc;
+        descIn.oninput = () => { this.currentDesc = descIn.value; };
 
-            // Project selector — only shown if the API returned projects
-            if (projects.length > 0) {
-                const projectSel = formContainer.createEl("select");
-                projectSel.style.cssText = inputStyle;
-
-                const noneOpt = projectSel.createEl("option", { text: "No project", value: "" });
-                noneOpt.selected = !this.currentProjectId;
-
-                projects.forEach((p: any) => {
-                    const opt = projectSel.createEl("option", { text: p.name, value: p.id });
-                    if (p.id === this.currentProjectId) opt.selected = true;
-                });
-
-                projectSel.onchange = () => { this.currentProjectId = projectSel.value; };
-            }
+        // Project selector
+        if (this.projects.length > 0) {
+            const projectSel = formContainer.createEl("select");
+            projectSel.style.cssText = S.input;
+            projectSel.createEl("option", { text: "No project", value: "" }).selected = !this.currentProjectId;
+            this.projects.forEach((p: any) => {
+                const opt = projectSel.createEl("option", { text: p.name, value: p.id });
+                if (p.id === this.currentProjectId) opt.selected = true;
+            });
+            projectSel.onchange = () => { this.currentProjectId = projectSel.value; };
         }
 
-        // Control row: status | more/less | [cancel] | add/save
+        // Control row: status | cancel | save
         const controlRow = formContainer.createDiv();
         controlRow.style.cssText = "display: flex; gap: 6px; align-items: center;";
 
-        if (!this.currentStatus && statuses.length > 0) {
-            this.currentStatus = statuses[0].label;
-        }
-
         const statusSel = controlRow.createEl("select");
         statusSel.style.cssText = "flex: 1; height: 30px; font-size: var(--font-ui-small);";
-        statuses.forEach((status: any) => {
-            const opt = statusSel.createEl("option", { text: status.label, value: status.label });
-            if (status.label === this.currentStatus) opt.selected = true;
+        this.statuses.forEach((s: any) => {
+            const opt = statusSel.createEl("option", { text: s.label, value: s.label });
+            if (s.label === this.currentStatus) opt.selected = true;
         });
         statusSel.onchange = () => { this.currentStatus = statusSel.value; };
 
-        const toggleBtn = controlRow.createEl("button", { text: this.showAdvanced ? "Less" : "More" });
-        toggleBtn.style.cssText = "height: 30px; font-size: var(--font-ui-small); color: var(--text-muted); background: var(--background-modifier-border); border: none; border-radius: var(--radius-s); cursor: pointer; padding: 0 8px;";
-        toggleBtn.onclick = () => { this.showAdvanced = !this.showAdvanced; this.render(); };
+        const cancelBtn = controlRow.createEl("button", { text: "Cancel" });
+        cancelBtn.style.cssText = "height: 30px; font-size: var(--font-ui-small); padding: 0 8px;";
+        cancelBtn.onclick = () => {
+            this.showForm = false;
+            this.editingTaskId = null;
+            this.currentTitle = "";
+            this.currentDesc = "";
+            this.currentProjectId = "";
+            this.mount(mountContainer);
+        };
 
-        if (this.editingTaskId) {
-            const cancelBtn = controlRow.createEl("button", { text: "Cancel" });
-            cancelBtn.style.cssText = "height: 30px; font-size: var(--font-ui-small); padding: 0 8px;";
-            cancelBtn.onclick = () => {
-                this.editingTaskId = null;
-                this.currentTitle = "";
-                this.currentDesc = "";
-                this.currentProjectId = "";
-                this.showAdvanced = false;
-                this.render();
-            };
-        }
-
-        const actionBtn = controlRow.createEl("button", {
+        const saveBtn = controlRow.createEl("button", {
             text: this.editingTaskId ? "Save" : "Add",
             cls: "mod-cta"
         });
-        actionBtn.style.cssText = "height: 30px; font-size: var(--font-ui-small); padding: 0 12px;";
-        actionBtn.onclick = async () => {
-            if (!this.currentTitle.trim()) {
-                new Notice("Title is required");
-                return;
-            }
+        saveBtn.style.cssText = "height: 30px; font-size: var(--font-ui-small); padding: 0 12px;";
+        saveBtn.onclick = async () => {
+            if (!this.currentTitle.trim()) { new Notice("Title is required"); return; }
 
             const payload: any = {
                 title: this.currentTitle,
@@ -252,11 +406,7 @@ class TaskView extends ItemView {
                 assigned_email: this.plugin.settings.userEmail,
                 status: this.currentStatus,
             };
-
-            // Only include project_id if one is selected
-            if (this.currentProjectId) {
-                payload.project_id = this.currentProjectId;
-            }
+            if (this.currentProjectId) payload.project_id = this.currentProjectId;
 
             try {
                 if (this.editingTaskId) {
@@ -266,78 +416,20 @@ class TaskView extends ItemView {
                     await this.plugin.apiRequest('tasks', 'POST', payload);
                     new Notice("Task added");
                 }
-
+                this.showForm = false;
                 this.editingTaskId = null;
                 this.currentTitle = "";
                 this.currentDesc = "";
                 this.currentProjectId = "";
-                this.showAdvanced = false;
-
-                await this.render();
+                await this.mount(mountContainer);
             } catch (e) {
                 new Notice("Failed to save task");
                 console.error(e);
             }
         };
-
-        // ── TASK LIST HEADER (label + search + filter, visually grouped) ──────
-        const listHeader = wrapper.createDiv();
-        listHeader.style.cssText = "display: flex; align-items: center; gap: 6px; margin-top: 4px;";
-
-        const listLabel = listHeader.createEl("span");
-        listLabel.style.cssText = [
-            "font-size: var(--font-ui-smaller)",
-            "font-weight: 600",
-            "letter-spacing: 0.05em",
-            "text-transform: uppercase",
-            "color: var(--text-muted)",
-            "flex-shrink: 0",
-        ].join("; ");
-        listLabel.setText("Tasks");
-
-        const ruleFlex = listHeader.createEl("span");
-        ruleFlex.style.cssText = "flex: 1; height: 1px; background: var(--background-modifier-border);";
-
-        const searchIn = listHeader.createEl("input", { type: "text", placeholder: "Search…" });
-        searchIn.style.cssText = "width: 110px; height: 26px; font-size: var(--font-ui-small); box-sizing: border-box;";
-        searchIn.value = this.searchQuery;
-        searchIn.oninput = () => {
-            this.searchQuery = searchIn.value.toLowerCase();
-            this.renderTaskList(statuses, projects);
-        };
-
-        const filterSel = listHeader.createEl("select");
-        filterSel.style.cssText = "height: 26px; font-size: var(--font-ui-small); max-width: 100px;";
-        filterSel.createEl("option", { text: "All", value: "all" });
-        statuses.forEach((s: any) => {
-            const opt = filterSel.createEl("option", { text: s.label, value: s.label });
-            if (this.filterStatus === s.label) opt.selected = true;
-        });
-        filterSel.onchange = () => {
-            this.filterStatus = filterSel.value;
-            this.renderTaskList(statuses, projects);
-        };
-
-        // ── TASK LIST CONTAINER ───────────────────────────────────────────────
-        this.taskListEl = wrapper.createDiv();
-
-        try {
-            const email = this.plugin.settings.userEmail;
-            const qs = email ? `?assigned_email=${encodeURIComponent(email)}` : '';
-            const res = await this.plugin.apiRequest(`tasks${qs}`);
-            this.cachedTasks = res.data || [];
-        } catch (e) {
-            this.cachedTasks = [];
-            this.taskListEl.createEl("p", { text: "Error loading tasks." });
-            return;
-        }
-
-        this.renderTaskList(statuses, projects);
     }
 
-    // Redraws only the task list area. Safe to call without losing focus on
-    // the search input because the form DOM is untouched.
-    private renderTaskList(statuses: any[], projects: any[]) {
+    private renderTaskList() {
         if (!this.taskListEl) return;
         this.taskListEl.empty();
 
@@ -354,82 +446,74 @@ class TaskView extends ItemView {
         }
 
         if (tasks.length === 0) {
-            const empty = this.taskListEl.createEl("p", { text: "No tasks match your filters." });
-            empty.style.cssText = "text-align: center; color: var(--text-muted); font-size: var(--font-ui-small); margin: 16px 0;";
+            const empty = this.taskListEl.createEl("p", { text: "No tasks found." });
+            empty.style.cssText = "text-align: center; color: var(--text-muted); font-size: var(--font-ui-small); margin: 20px 0;";
             return;
         }
 
         tasks.forEach((task: any) => {
-            const statusInfo = statuses.find((s: any) => s.label === task.status);
-            const statusColor = statusInfo?.colour || 'var(--text-muted)';
-            const isCompleted = task.status?.toLowerCase() === 'completed';
-
-            // Resolve project name for display if the task has one
-            const projectName = task.project_id
-                ? (projects.find((p: any) => p.id === task.project_id)?.name ?? null)
+            const statusInfo   = this.statuses.find((s: any) => s.label === task.status);
+            const statusColor  = statusInfo?.colour || 'var(--text-muted)';
+            const isCompleted  = task.status?.toLowerCase() === 'completed';
+            const projectName  = task.project_id
+                ? (this.projects.find((p: any) => p.id === task.project_id)?.name ?? null)
                 : null;
 
             const editAction = () => {
-                this.editingTaskId = task.id;
-                this.currentTitle = task.title;
-                this.currentDesc = task.description || "";
-                this.currentStatus = task.status;
+                this.editingTaskId   = task.id;
+                this.currentTitle    = task.title;
+                this.currentDesc     = task.description || "";
+                this.currentStatus   = task.status;
                 this.currentProjectId = task.project_id || "";
-                // Open advanced panel if there's a description or a project set
-                this.showAdvanced = !!(task.description || task.project_id);
-                this.render();
+                this.showForm        = true;
+                // Re-mount so form appears; taskListEl will be re-fetched
+                this.mount(this.taskListEl!.closest('[style*="padding: 10px"]')?.parentElement as HTMLElement);
             };
 
-            const taskItem = new Setting(this.taskListEl!)
-                .setName(task.title)
-                .addExtraButton(btn => {
-                    btn.setIcon("trash")
-                        .setTooltip("Delete")
-                        .onClick(async () => {
-                            if (confirm("Delete task?")) {
-                                await this.plugin.apiRequest(`tasks/${task.id}`, 'DELETE');
-                                this.render();
-                            }
-                        });
+            const item = new Setting(this.taskListEl!).addExtraButton(btn => {
+                btn.setIcon("trash").setTooltip("Delete").onClick(async () => {
+                    if (confirm("Delete task?")) {
+                        await this.plugin.apiRequest(`tasks/${task.id}`, 'DELETE');
+                        // Remove from cache and redraw without a full API re-fetch
+                        this.cachedTasks = this.cachedTasks.filter((t: any) => t.id !== task.id);
+                        this.renderTaskList();
+                    }
                 });
+            });
 
-            taskItem.settingEl.style.cssText = "padding: 3px 0; border: none; min-height: auto;";
+            item.settingEl.style.cssText = "padding: 3px 0; border: none; min-height: auto;";
+            if (isCompleted) item.settingEl.style.opacity = "0.5";
 
-            if (isCompleted) {
-                taskItem.settingEl.style.opacity = "0.5";
-            }
-
-            const nameEl = taskItem.nameEl;
+            const nameEl = item.nameEl;
+            nameEl.empty();
             nameEl.style.cssText = [
                 "font-size: var(--font-ui-small)",
                 "display: flex",
-                "flex-direction: column",
-                "align-items: flex-start",
-                "gap: 2px",
+                "align-items: center",
+                "gap: 8px",
                 "cursor: pointer",
+                "flex: 1",
+                "min-width: 0",
             ].join("; ");
             nameEl.title = "Edit task";
             nameEl.onclick = editAction;
 
-            // Title row: dot + title text
-            const titleRow = nameEl.createDiv();
-            titleRow.style.cssText = "display: flex; align-items: center; gap: 8px;";
-
             const dot = document.createElement("div");
             dot.style.cssText = `width: 7px; height: 7px; border-radius: 50%; background-color: ${statusColor}; flex-shrink: 0;`;
             dot.title = task.status ?? "";
-            titleRow.appendChild(dot);
+            nameEl.appendChild(dot);
 
-            const titleText = document.createElement("span");
-            titleText.textContent = task.title;
+            const titleSpan = document.createElement("span");
+            titleSpan.textContent = task.title;
+            titleSpan.style.cssText = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
             if (isCompleted) {
-                titleText.style.cssText = "text-decoration: line-through; color: var(--text-muted);";
+                titleSpan.style.textDecoration = "line-through";
+                titleSpan.style.color = "var(--text-muted)";
             }
-            titleRow.appendChild(titleText);
+            nameEl.appendChild(titleSpan);
 
-            // Project badge — shown below the title if the task belongs to a project
             if (projectName) {
-                const badge = nameEl.createEl("span");
+                const badge = document.createElement("span");
                 badge.textContent = projectName;
                 badge.style.cssText = [
                     "font-size: var(--font-ui-smaller)",
@@ -437,12 +521,310 @@ class TaskView extends ItemView {
                     "background: var(--background-modifier-border)",
                     "border-radius: var(--radius-s)",
                     "padding: 1px 5px",
-                    "margin-left: 15px",  // aligns under title text, past the dot
+                    "white-space: nowrap",
+                    "flex-shrink: 0",
                 ].join("; ");
+                nameEl.appendChild(badge);
             }
         });
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Projects pane
+// ─────────────────────────────────────────────────────────────────────────────
+
+class ProjectsPane {
+    private plugin: MyTaskPlugin;
+    private selectedProject: any | null = null;
+    private showNewProjectForm: boolean = false;
+    private newProjectName: string = "";
+    private newProjectDesc: string = "";
+    private cachedProjectTasks: any[] = [];
+    private projectTaskListEl: HTMLElement | null = null;
+    private statuses: any[] = [];
+
+    constructor(plugin: MyTaskPlugin) {
+        this.plugin = plugin;
+    }
+
+    async mount(container: HTMLElement) {
+        container.empty();
+        this.projectTaskListEl = null;
+
+        const metaPromise     = this.plugin.metaData ? Promise.resolve() : this.plugin.fetchMeta();
+        const projectsPromise = this.plugin.fetchProjects();
+        await Promise.all([metaPromise, projectsPromise]);
+
+        this.statuses = this.plugin.metaData?.statuses || [];
+        const projects = this.plugin.projects || [];
+
+        const wrapper = container.createDiv({
+            attr: { style: "padding: 10px; display: flex; flex-direction: column; gap: 8px;" }
+        });
+
+        // ── BACK BUTTON (when a project is open) ──────────────────────────────
+        if (this.selectedProject) {
+            await this.renderProjectDetail(wrapper, container, projects);
+            return;
+        }
+
+        // ── TOOLBAR: + new project ────────────────────────────────────────────
+        const toolbar = wrapper.createDiv();
+        toolbar.style.cssText = "display: flex; align-items: center; gap: 6px;";
+
+        const toolbarLabel = toolbar.createEl("span");
+        toolbarLabel.style.cssText = "flex: 1; font-size: var(--font-ui-small); color: var(--text-muted);";
+        toolbarLabel.textContent = projects.length + " project" + (projects.length !== 1 ? "s" : "");
+
+        const addBtn = toolbar.createEl("button", { text: "+" });
+        addBtn.style.cssText = [
+            "height: 26px",
+            "width: 26px",
+            "font-size: 16px",
+            "line-height: 1",
+            "padding: 0",
+            "border: none",
+            "border-radius: var(--radius-s)",
+            "background: var(--interactive-accent)",
+            "color: var(--text-on-accent)",
+            "cursor: pointer",
+            "flex-shrink: 0",
+        ].join("; ");
+        addBtn.title = "New project";
+        addBtn.onclick = () => {
+            this.showNewProjectForm = !this.showNewProjectForm;
+            this.mount(container);
+        };
+
+        // ── NEW PROJECT FORM ──────────────────────────────────────────────────
+        if (this.showNewProjectForm) {
+            const formLabel = wrapper.createEl("p");
+            formLabel.style.cssText = [
+                "margin: 0",
+                "font-size: var(--font-ui-smaller)",
+                "font-weight: 600",
+                "letter-spacing: 0.05em",
+                "text-transform: uppercase",
+                "color: var(--text-muted)",
+            ].join("; ");
+            formLabel.setText("New project");
+
+            const formEl = wrapper.createDiv();
+            formEl.style.cssText = [
+                "background: var(--background-secondary)",
+                "border-radius: var(--radius-m)",
+                "padding: 10px",
+                "display: flex",
+                "flex-direction: column",
+                "gap: 6px",
+                "box-shadow: var(--shadow-s)",
+            ].join("; ");
+
+            const nameIn = formEl.createEl("input", { type: "text", placeholder: "Project name..." });
+            nameIn.style.cssText = S.input;
+            nameIn.value = this.newProjectName;
+            nameIn.oninput = () => { this.newProjectName = nameIn.value; };
+            setTimeout(() => nameIn.focus(), 0);
+
+            const descIn = formEl.createEl("textarea", { placeholder: "Description (optional)..." });
+            descIn.style.cssText = "width: 100%; height: 60px; font-size: var(--font-ui-small); box-sizing: border-box; resize: none;";
+            descIn.value = this.newProjectDesc;
+            descIn.oninput = () => { this.newProjectDesc = descIn.value; };
+
+            const btnRow = formEl.createDiv();
+            btnRow.style.cssText = "display: flex; gap: 6px; justify-content: flex-end;";
+
+            const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+            cancelBtn.style.cssText = "height: 30px; font-size: var(--font-ui-small); padding: 0 8px;";
+            cancelBtn.onclick = () => {
+                this.showNewProjectForm = false;
+                this.newProjectName = "";
+                this.newProjectDesc = "";
+                this.mount(container);
+            };
+
+            const saveBtn = btnRow.createEl("button", { text: "Create", cls: "mod-cta" });
+            saveBtn.style.cssText = "height: 30px; font-size: var(--font-ui-small); padding: 0 12px;";
+            saveBtn.onclick = async () => {
+                if (!this.newProjectName.trim()) { new Notice("Project name is required"); return; }
+                try {
+                    await this.plugin.apiRequest('projects', 'POST', {
+                        name: this.newProjectName,
+                        description: this.newProjectDesc || null,
+                    });
+                    new Notice("Project created");
+                    this.showNewProjectForm = false;
+                    this.newProjectName = "";
+                    this.newProjectDesc = "";
+                    await this.plugin.fetchProjects();
+                    this.mount(container);
+                } catch (e) {
+                    new Notice("Failed to create project");
+                    console.error(e);
+                }
+            };
+        }
+
+        // ── PROJECT LIST ──────────────────────────────────────────────────────
+        if (projects.length === 0) {
+            const empty = wrapper.createEl("p", { text: "No projects yet. Press + to create one." });
+            empty.style.cssText = "text-align: center; color: var(--text-muted); font-size: var(--font-ui-small); margin: 20px 0;";
+            return;
+        }
+
+        projects.forEach((project: any) => {
+            const item = wrapper.createDiv();
+            item.style.cssText = [
+                "display: flex",
+                "align-items: center",
+                "justify-content: space-between",
+                "padding: 7px 4px",
+                "border-bottom: 1px solid var(--background-modifier-border)",
+                "cursor: pointer",
+                "gap: 8px",
+            ].join("; ");
+
+            item.onmouseenter = () => { item.style.background = "var(--background-modifier-hover)"; };
+            item.onmouseleave = () => { item.style.background = "transparent"; };
+
+            const left = item.createDiv();
+            left.style.cssText = "display: flex; flex-direction: column; gap: 2px; min-width: 0;";
+
+            const nameRow = left.createDiv();
+            nameRow.style.cssText = "display: flex; align-items: center; gap: 6px;";
+
+            const nameSpan = nameRow.createEl("span");
+            nameSpan.textContent = project.name;
+            nameSpan.style.cssText = "font-size: var(--font-ui-small); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+
+            const count = project.task_count ?? 0;
+            const countBadge = nameRow.createEl("span");
+            countBadge.textContent = String(count);
+            countBadge.style.cssText = [
+                "font-size: var(--font-ui-smaller)",
+                "font-weight: 500",
+                "min-width: 18px",
+                "height: 18px",
+                "line-height: 18px",
+                "text-align: center",
+                "border-radius: 9px",
+                "padding: 0 5px",
+                "flex-shrink: 0",
+                count > 0
+                    ? "background: var(--interactive-accent); color: var(--text-on-accent);"
+                    : "background: var(--background-modifier-border); color: var(--text-muted);",
+            ].join("; ");
+            countBadge.title = `${count} task${count !== 1 ? "s" : ""}`;
+
+            if (project.description) {
+                const descSpan = left.createEl("span");
+                descSpan.textContent = project.description;
+                descSpan.style.cssText = "font-size: var(--font-ui-smaller); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+            }
+
+            // Chevron
+            const chevron = item.createEl("span");
+            chevron.textContent = "›";
+            chevron.style.cssText = "color: var(--text-muted); font-size: 18px; flex-shrink: 0;";
+
+            item.onclick = () => {
+                this.selectedProject = project;
+                this.mount(container);
+            };
+        });
+    }
+
+    private async renderProjectDetail(wrapper: HTMLElement, container: HTMLElement, projects: any[]) {
+        // ── BACK + TITLE ──────────────────────────────────────────────────────
+        const header = wrapper.createDiv();
+        header.style.cssText = "display: flex; align-items: center; gap: 8px;";
+
+        const backBtn = header.createEl("button", { text: "‹" });
+        backBtn.style.cssText = [
+            S.btnMuted,
+            "height: 28px",
+            "width: 28px",
+            "font-size: 18px",
+            "padding: 0",
+        ].join("; ");
+        backBtn.title = "Back to projects";
+        backBtn.onclick = () => {
+            this.selectedProject = null;
+            this.cachedProjectTasks = [];
+            this.mount(container);
+        };
+
+        const titleEl = header.createEl("span");
+        titleEl.textContent = this.selectedProject.name;
+        titleEl.style.cssText = "font-size: var(--font-ui-small); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+
+        if (this.selectedProject.description) {
+            const descEl = wrapper.createEl("p");
+            descEl.textContent = this.selectedProject.description;
+            descEl.style.cssText = "margin: 0; font-size: var(--font-ui-smaller); color: var(--text-muted);";
+        }
+
+        // ── PROJECT TASK LIST ─────────────────────────────────────────────────
+        this.projectTaskListEl = wrapper.createDiv();
+
+        try {
+            const email = this.plugin.settings.userEmail;
+            const params = new URLSearchParams({ project_id: this.selectedProject.id });
+            if (email) params.set('assigned_email', email);
+            const res = await this.plugin.apiRequest(`tasks?${params.toString()}`);
+            this.cachedProjectTasks = res.data || [];
+        } catch (e) {
+            this.projectTaskListEl.createEl("p", { text: "Error loading tasks." });
+            return;
+        }
+
+        this.renderProjectTaskList(projects);
+    }
+
+    private renderProjectTaskList(projects: any[]) {
+        if (!this.projectTaskListEl) return;
+        this.projectTaskListEl.empty();
+
+        if (this.cachedProjectTasks.length === 0) {
+            const empty = this.projectTaskListEl.createEl("p", { text: "No tasks in this project." });
+            empty.style.cssText = "text-align: center; color: var(--text-muted); font-size: var(--font-ui-small); margin: 20px 0;";
+            return;
+        }
+
+        this.cachedProjectTasks.forEach((task: any) => {
+            const statusInfo  = this.statuses.find((s: any) => s.label === task.status);
+            const statusColor = statusInfo?.colour || 'var(--text-muted)';
+            const isCompleted = task.status?.toLowerCase() === 'completed';
+
+            const item = new Setting(this.projectTaskListEl!);
+            item.settingEl.style.cssText = "padding: 3px 0; border: none; min-height: auto;";
+            if (isCompleted) item.settingEl.style.opacity = "0.5";
+
+            const nameEl = item.nameEl;
+            nameEl.empty();
+            nameEl.style.cssText = "font-size: var(--font-ui-small); display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;";
+
+            const dot = document.createElement("div");
+            dot.style.cssText = `width: 7px; height: 7px; border-radius: 50%; background-color: ${statusColor}; flex-shrink: 0;`;
+            dot.title = task.status ?? "";
+            nameEl.appendChild(dot);
+
+            const titleSpan = document.createElement("span");
+            titleSpan.textContent = task.title;
+            titleSpan.style.cssText = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+            if (isCompleted) {
+                titleSpan.style.textDecoration = "line-through";
+                titleSpan.style.color = "var(--text-muted)";
+            }
+            nameEl.appendChild(titleSpan);
+        });
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings tab
+// ─────────────────────────────────────────────────────────────────────────────
 
 class MyTasksSettingTab extends PluginSettingTab {
     plugin: MyTaskPlugin;
