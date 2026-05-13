@@ -85,21 +85,54 @@ export default class MyTaskPlugin extends Plugin {
                 method,
                 headers: { 'Accept': 'application/json', 'Authorization': `Bearer ${this.accessToken}` },
                 contentType: 'application/json',
-                body: body ? JSON.stringify(body) : undefined
+                body: body ? JSON.stringify(body) : undefined,
+                throw: false,  // Don't throw on non-2xx — handle it ourselves
             });
-            if (response.status === 204 || !response.text) return {};
-            return response.json;
-        } catch (e) {
-            if (e.status === 401) {
+            if (response.status === 401) {
                 this.accessToken = null;
                 return this.apiRequest(path, method, body);
             }
+            if (response.status >= 400) {
+                // Log the actual API error body so we can see the real message
+                let errorBody: any = response.text;
+                try { errorBody = JSON.parse(response.text); } catch {}
+                console.error(`Tasks API error [${method} ${path}]`, {
+                    status: response.status,
+                    body: errorBody,
+                });
+                const err: any = new Error(`Request failed, status ${response.status}`);
+                err.status = response.status;
+                err.body = errorBody;
+                throw err;
+            }
+            if (response.status === 204 || !response.text) return {};
+            return response.json;
+        } catch (e) {
+            if ((e as any).status) throw e;  // Already handled above
             throw e;
         }
     }
 
-    async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
-    async saveSettings() { await this.saveData(this.settings); }
+    async loadSettings() {
+        const data = await this.loadData() ?? {};
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+        this.cachedTasksStore = data.cachedTasks ?? [];
+    }
+
+    async saveSettings() {
+        await this.saveData({
+            ...this.settings,
+            cachedTasks: this.cachedTasksStore,
+        });
+    }
+
+    // Persisted task cache — survives plugin restarts
+    cachedTasksStore: any[] = [];
+
+    async persistTaskCache(tasks: any[]) {
+        this.cachedTasksStore = tasks;
+        await this.saveSettings();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -218,6 +251,7 @@ class TasksPane {
     private filterStatus: string = "all";
     private cachedTasks: any[] = [];
     private taskListEl: HTMLElement | null = null;
+    private mountContainer: HTMLElement | null = null;
 
     // Cached for re-renders
     private statuses: any[] = [];
@@ -228,6 +262,7 @@ class TasksPane {
     }
 
     async mount(container: HTMLElement) {
+        this.mountContainer = container;
         container.empty();
         this.taskListEl = null;
 
@@ -306,18 +341,72 @@ class TasksPane {
         // ── TASK LIST ─────────────────────────────────────────────────────────
         this.taskListEl = wrapper.createDiv();
 
-        try {
-            const email = this.plugin.settings.userEmail;
-            const qs    = email ? `?assigned_email=${encodeURIComponent(email)}` : '';
-            const res   = await this.plugin.apiRequest(`tasks${qs}`);
-            this.cachedTasks = res.data || [];
-        } catch (e) {
-            this.cachedTasks = [];
-            this.taskListEl.createEl("p", { text: "Error loading tasks." });
-            return;
-        }
+        // ── STALE-WHILE-REVALIDATE ────────────────────────────────────────────
+        // 1. Render persisted cache immediately so the list appears with no delay.
+        const persisted = this.plugin.cachedTasksStore;
+        if (persisted.length > 0) {
+            this.cachedTasks = persisted;
+            this.renderTaskList();
+            // Show a subtle "refreshing" indicator in the toolbar
+            const refreshDot = toolbar.createEl("span");
+            refreshDot.title = "Refreshing…";
+            refreshDot.style.cssText = [
+                "width: 6px",
+                "height: 6px",
+                "border-radius: 50%",
+                "background: var(--text-muted)",
+                "flex-shrink: 0",
+                "opacity: 0.5",
+                "align-self: center",
+            ].join("; ");
 
-        this.renderTaskList();
+            // 2. Fetch fresh data in the background — but skip if the form is
+            //    open, since re-rendering the task list while the user is typing
+            //    causes focus loss.
+            if (!this.showForm) {
+                try {
+                    const email  = this.plugin.settings.userEmail;
+                    const params = email
+                        ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
+                        : '';
+                    const res   = await this.plugin.apiRequest(`tasks${params}`);
+                    const fresh = res.data || [];
+
+                    // 3. Only re-render if data actually changed.
+                    if (JSON.stringify(fresh) !== JSON.stringify(this.cachedTasks)) {
+                        this.cachedTasks = fresh;
+                        this.renderTaskList();
+                    }
+                    await this.plugin.persistTaskCache(fresh);
+                    refreshDot.remove();
+                } catch (e) {
+                    // Network failed — cached data stays visible, dot turns amber.
+                    refreshDot.style.background = "var(--color-orange)";
+                    refreshDot.style.opacity = "1";
+                    refreshDot.title = "Could not refresh — showing cached data";
+                }
+            } else {
+                refreshDot.remove();
+            }
+        } else {
+            // No cache yet — show a loading state and wait for the network.
+            const loadingMsg = this.taskListEl.createEl("p", { text: "Loading tasks…" });
+            loadingMsg.style.cssText = "text-align: center; color: var(--text-muted); font-size: var(--font-ui-small); margin: 20px 0;";
+            try {
+                const email  = this.plugin.settings.userEmail;
+                const params = email
+                    ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
+                    : '';
+                const res   = await this.plugin.apiRequest(`tasks${params}`);
+                this.cachedTasks = res.data || [];
+                await this.plugin.persistTaskCache(this.cachedTasks);
+                loadingMsg.remove();
+            } catch (e) {
+                loadingMsg.setText("Could not load tasks.");
+                return;
+            }
+            this.renderTaskList();
+        }
     }
 
     private renderForm(wrapper: HTMLElement, mountContainer: HTMLElement) {
@@ -467,16 +556,21 @@ class TasksPane {
                 this.currentProjectId = task.project_id || "";
                 this.showForm        = true;
                 // Re-mount so form appears; taskListEl will be re-fetched
-                this.mount(this.taskListEl!.closest('[style*="padding: 10px"]')?.parentElement as HTMLElement);
+                this.mount(this.mountContainer!);
             };
 
             const item = new Setting(this.taskListEl!).addExtraButton(btn => {
                 btn.setIcon("trash").setTooltip("Delete").onClick(async () => {
                     if (confirm("Delete task?")) {
-                        await this.plugin.apiRequest(`tasks/${task.id}`, 'DELETE');
-                        // Remove from cache and redraw without a full API re-fetch
-                        this.cachedTasks = this.cachedTasks.filter((t: any) => t.id !== task.id);
-                        this.renderTaskList();
+                        try {
+                            await this.plugin.apiRequest(`tasks/${task.id}`, 'DELETE');
+                            // Remove from cache and redraw without a full API re-fetch
+                            this.cachedTasks = this.cachedTasks.filter((t: any) => t.id !== task.id);
+                            this.renderTaskList();
+                        } catch (e) {
+                            new Notice(`Failed to delete task (${e.status ?? 'error'})`);
+                            console.error("Delete failed", e);
+                        }
                     }
                 });
             });
@@ -771,7 +865,12 @@ class ProjectsPane {
         try {
             const email = this.plugin.settings.userEmail;
             const params = new URLSearchParams({ project_id: this.selectedProject.id });
-            if (email) params.set('assigned_email', email);
+            // owner_email unlocks visibility of private projects in the API.
+            // assigned_email is included for clients with can_lookup_assigned_tasks.
+            if (email) {
+                params.set('assigned_email', email);
+                params.set('owner_email', email);
+            }
             const res = await this.plugin.apiRequest(`tasks?${params.toString()}`);
             this.cachedProjectTasks = res.data || [];
         } catch (e) {
