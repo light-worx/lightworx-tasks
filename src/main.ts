@@ -252,6 +252,7 @@ class TasksPane {
     private cachedTasks: any[] = [];
     private taskListEl: HTMLElement | null = null;
     private mountContainer: HTMLElement | null = null;
+    private formJustOpened: boolean = false;
 
     // Cached for re-renders
     private statuses: any[] = [];
@@ -329,6 +330,7 @@ class TasksPane {
                 this.currentProjectId = "";
                 this.currentStatus = this.statuses[0]?.label ?? "";
             }
+            this.formJustOpened = !this.showForm; // true only when opening, not closing
             this.showForm = !this.showForm;
             this.mount(container);
         };
@@ -437,8 +439,11 @@ class TasksPane {
         titleIn.style.cssText = S.input;
         titleIn.value = this.currentTitle;
         titleIn.oninput = () => { this.currentTitle = titleIn.value; };
-        // Auto-focus the title field when the form opens
-        setTimeout(() => titleIn.focus(), 0);
+        // Only autofocus when the form is first opened, not on every re-mount
+        if (this.formJustOpened) {
+            this.formJustOpened = false;
+            setTimeout(() => titleIn.focus(), 0);
+        }
 
         // Description
         const descIn = formContainer.createEl("textarea", { placeholder: "Description (optional)..." });
@@ -499,7 +504,11 @@ class TasksPane {
 
             try {
                 if (this.editingTaskId) {
-                    await this.plugin.apiRequest(`tasks/${this.editingTaskId}`, 'PUT', payload);
+                    const email = this.plugin.settings.userEmail;
+                    const qs = email
+                        ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
+                        : '';
+                    await this.plugin.apiRequest(`tasks/${this.editingTaskId}${qs}`, 'PUT', payload);
                     new Notice("Task updated");
                 } else {
                     await this.plugin.apiRequest('tasks', 'POST', payload);
@@ -555,7 +564,7 @@ class TasksPane {
                 this.currentStatus   = task.status;
                 this.currentProjectId = task.project_id || "";
                 this.showForm        = true;
-                // Re-mount so form appears; taskListEl will be re-fetched
+                this.formJustOpened  = true;
                 this.mount(this.mountContainer!);
             };
 
@@ -563,7 +572,11 @@ class TasksPane {
                 btn.setIcon("trash").setTooltip("Delete").onClick(async () => {
                     if (confirm("Delete task?")) {
                         try {
-                            await this.plugin.apiRequest(`tasks/${task.id}`, 'DELETE');
+                            const email = this.plugin.settings.userEmail;
+                            const qs = email
+                                ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
+                                : '';
+                            await this.plugin.apiRequest(`tasks/${task.id}${qs}`, 'DELETE');
                             // Remove from cache and redraw without a full API re-fetch
                             this.cachedTasks = this.cachedTasks.filter((t: any) => t.id !== task.id);
                             this.renderTaskList();
