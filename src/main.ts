@@ -11,13 +11,19 @@ interface MyTasksSettings {
     clientId: string;
     clientSecret: string;
     userEmail: string;
+    scheduleToCalendar: boolean;   // create a calendar event when a task has due_at
+    calendarId: string;            // target calendar (overrides calendar plugin default)
+    defaultTaskDuration: number;   // minutes; used when creating a calendar event
 }
 
 const DEFAULT_SETTINGS: MyTasksSettings = {
     apiUrl: 'https://tasks.lightworx.co.za',
     clientId: '',
     clientSecret: '',
-    userEmail: ''
+    userEmail: '',
+    scheduleToCalendar: false,
+    calendarId: '',
+    defaultTaskDuration: 30,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +41,11 @@ export default class MyTaskPlugin extends Plugin {
         this.registerView(VIEW_TYPE_TASKS, (leaf) => new TaskView(leaf, this));
         this.addRibbonIcon('list-checks', 'Open Lightworx Tasks', () => this.activateView());
         this.addSettingTab(new MyTasksSettingTab(this.app, this));
+    }
+
+    calPlugin(): any | null {
+        const p = (this.app as any).plugins?.plugins?.['lightworx-calendar'];
+        return p ?? null;
     }
 
     async fetchMeta() {
@@ -500,9 +511,12 @@ class TasksPane {
                 assigned_email: this.plugin.settings.userEmail,
                 status: this.currentStatus,
             };
-            if (this.currentProjectId) payload.project_id = this.currentProjectId;
+
+        if (this.currentProjectId) payload.project_id = this.currentProjectId;
+            if (this.currentDueAt)     payload.due_at = new Date(this.currentDueAt).toISOString();
 
             try {
+                const isNew = !this.editingTaskId;
                 if (this.editingTaskId) {
                     const email = this.plugin.settings.userEmail;
                     const qs = email
@@ -514,11 +528,37 @@ class TasksPane {
                     await this.plugin.apiRequest('tasks', 'POST', payload);
                     new Notice("Task added");
                 }
+
+                // Optionally create a Google Calendar event via the calendar plugin
+                const calPlugin = this.plugin.calPlugin();
+                if (calPlugin && this.plugin.settings.scheduleToCalendar && this.currentDueAt && isNew) {
+                    try {
+                        const calId = this.plugin.settings.calendarId || calPlugin.getDefaultCalendarId();
+                        const startDate = new Date(this.currentDueAt);
+                        const endDate   = new Date(
+                            startDate.getTime() +
+                            (this.plugin.settings.defaultTaskDuration ?? 30) * 60 * 1000
+                        );
+                        await calPlugin.createCalendarEvent(
+                            calId,
+                            this.currentTitle,
+                            this.currentDesc || null,
+                            startDate.toISOString(),
+                            endDate.toISOString(),
+                        );
+                        new Notice("📅 Calendar event created");
+                    } catch (calErr) {
+                        console.error("Calendar event creation failed", calErr);
+                        new Notice("Task saved, but calendar event failed");
+                    }
+                }
+
                 this.showForm = false;
                 this.editingTaskId = null;
                 this.currentTitle = "";
                 this.currentDesc = "";
                 this.currentProjectId = "";
+                this.currentDueAt = "";
                 await this.mount(mountContainer);
             } catch (e) {
                 new Notice("Failed to save task");
