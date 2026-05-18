@@ -43,6 +43,7 @@ export default class MyTaskPlugin extends Plugin {
         this.addSettingTab(new MyTasksSettingTab(this.app, this));
     }
 
+    // Returns the calendar plugin instance if it is loaded, otherwise null.
     calPlugin(): any | null {
         const p = (this.app as any).plugins?.plugins?.['lightworx-calendar'];
         return p ?? null;
@@ -511,8 +512,7 @@ class TasksPane {
                 assigned_email: this.plugin.settings.userEmail,
                 status: this.currentStatus,
             };
-
-        if (this.currentProjectId) payload.project_id = this.currentProjectId;
+            if (this.currentProjectId) payload.project_id = this.currentProjectId;
             if (this.currentDueAt)     payload.due_at = new Date(this.currentDueAt).toISOString();
 
             try {
@@ -997,5 +997,59 @@ class MyTasksSettingTab extends PluginSettingTab {
                 this.plugin.settings.userEmail = v;
                 await this.plugin.saveSettings();
             }));
+
+        // ── Google Calendar integration ────────────────────────────────────────
+        const calPlugin = (this.app as any).plugins?.plugins?.['lightworx-calendar'];
+
+        containerEl.createEl('h3', { text: 'Google Calendar' });
+
+        if (!calPlugin) {
+            containerEl.createEl('p', {
+                text: 'Install and enable the Lightworx Calendar plugin to unlock Google Calendar integration.',
+                attr: { style: 'color: var(--text-muted); font-size: var(--font-ui-small);' }
+            });
+        } else {
+            new Setting(containerEl)
+                .setName('Schedule tasks to calendar')
+                .setDesc('When a new task has a due date, also create a Google Calendar event.')
+                .addToggle(t => t
+                    .setValue(this.plugin.settings.scheduleToCalendar)
+                    .onChange(async v => {
+                        this.plugin.settings.scheduleToCalendar = v;
+                        await this.plugin.saveSettings();
+                        this.display();  // re-render to show/hide dependent settings
+                    })
+                );
+
+            if (this.plugin.settings.scheduleToCalendar) {
+                const calendars: any[] = calPlugin.getCalendars?.() ?? [];
+
+                new Setting(containerEl)
+                    .setName('Target calendar')
+                    .setDesc('Which calendar to add events to. Defaults to the calendar plugin\'s default.')
+                    .addDropdown(dd => {
+                        dd.addOption('', `— default (${calPlugin.getDefaultCalendarId?.() || 'none set'}) —`);
+                        calendars.forEach((c: any) => dd.addOption(c.id, c.name));
+                        dd.setValue(this.plugin.settings.calendarId || '');
+                        dd.onChange(async v => {
+                            this.plugin.settings.calendarId = v;
+                            await this.plugin.saveSettings();
+                        });
+                    });
+
+                new Setting(containerEl)
+                    .setName('Default event duration (minutes)')
+                    .setDesc('How long calendar events should be when created from a task.')
+                    .addSlider(sl => sl
+                        .setLimits(15, 120, 15)
+                        .setValue(this.plugin.settings.defaultTaskDuration ?? 30)
+                        .setDynamicTooltip()
+                        .onChange(async v => {
+                            this.plugin.settings.defaultTaskDuration = v;
+                            await this.plugin.saveSettings();
+                        })
+                    );
+            }
+        }
     }
 }
