@@ -257,6 +257,7 @@ class TasksPane {
     private currentDesc: string = "";
     private currentStatus: string = "";
     private currentProjectId: string = "";
+    private currentDueAt: string = "";
 
     // List state
     private searchQuery: string = "";
@@ -463,6 +464,24 @@ class TasksPane {
         descIn.value = this.currentDesc;
         descIn.oninput = () => { this.currentDesc = descIn.value; };
 
+        // Due date / time
+        const dueRow = formContainer.createDiv();
+        dueRow.style.cssText = "display: flex; align-items: center; gap: 6px;";
+
+        const dueIn = dueRow.createEl("input", { type: "datetime-local" });
+        dueIn.style.cssText = "flex: 1; height: 30px; font-size: var(--font-ui-small); box-sizing: border-box;";
+        if (this.currentDueAt) dueIn.value = this.currentDueAt;
+        dueIn.oninput = () => { this.currentDueAt = dueIn.value; };
+
+        // Show a calendar indicator when the calendar plugin is present and scheduling is on
+        const calPlugin = this.plugin.calPlugin();
+        if (calPlugin && this.plugin.settings.scheduleToCalendar) {
+            const calLabel = dueRow.createEl("span");
+            calLabel.textContent = "📅";
+            calLabel.title = "A calendar event will be created on save";
+            calLabel.style.cssText = "font-size: 15px; flex-shrink: 0;";
+        }
+
         // Project selector
         if (this.projects.length > 0) {
             const projectSel = formContainer.createEl("select");
@@ -598,13 +617,14 @@ class TasksPane {
                 : null;
 
             const editAction = () => {
-                this.editingTaskId   = task.id;
-                this.currentTitle    = task.title;
-                this.currentDesc     = task.description || "";
-                this.currentStatus   = task.status;
+                this.editingTaskId    = task.id;
+                this.currentTitle     = task.title;
+                this.currentDesc      = task.description || "";
+                this.currentStatus    = task.status;
                 this.currentProjectId = task.project_id || "";
-                this.showForm        = true;
-                this.formJustOpened  = true;
+                this.currentDueAt     = task.due_at ? task.due_at.slice(0, 16) : "";
+                this.showForm         = true;
+                this.formJustOpened   = true;
                 this.mount(this.mountContainer!);
             };
 
