@@ -39,7 +39,7 @@ export default class MyTaskPlugin extends Plugin {
     async onload() {
         await this.loadSettings();
         this.registerView(VIEW_TYPE_TASKS, (leaf) => new TaskView(leaf, this));
-        this.addRibbonIcon('list-checks', 'Open Lightworx Tasks', () => this.activateView());
+        this.addRibbonIcon('list-checks', 'Open Tasks', () => this.activateView());
         this.addSettingTab(new MyTasksSettingTab(this.app, this));
     }
 
@@ -185,7 +185,7 @@ class TaskView extends ItemView {
     }
 
     getViewType()    { return VIEW_TYPE_TASKS; }
-    getDisplayText() { return "Lightworx Tasks"; }
+    getDisplayText() { return "Tasks"; }
     getIcon()        { return "check-square"; }
 
     async onOpen() { await this.render(); }
