@@ -586,6 +586,79 @@ class TasksPane {
         };
     }
 
+    // ── Calendar tab hover-to-activate during drag ───────────────────────────
+    // Finds the calendar plugin's tab header in the DOM. When a task is being
+    // dragged over it for 500ms the tab is activated, the calendar view renders,
+    // and its own drop handlers take over — no further action needed here.
+
+    private _tabHoverTimer: number | null = null;
+    private _tabHoverListeners: Array<{ el: HTMLElement; type: string; fn: EventListener }> = [];
+
+    private attachCalendarTabHover() {
+        this.detachCalendarTabHover();
+
+        const calPlugin = this.plugin.calPlugin();
+        if (!calPlugin) return;
+
+        const calLeaves = (this.plugin.app as any).workspace.getLeavesOfType('gcal-timeblock-view');
+        if (!calLeaves?.length) return;
+        const calLeaf = calLeaves[0];
+
+        // Obsidian sets tabHeaderEl directly on the leaf object
+        const tabEl: HTMLElement | undefined =
+            calLeaf.tabHeaderEl ??
+            (Array.from(document.querySelectorAll('.workspace-tab-header')) as HTMLElement[])
+                .find(h => h.querySelector('.workspace-tab-header-inner-title')
+                    ?.textContent?.trim() === 'GCal Timeblock');
+
+        if (!tabEl) return;
+
+        const onEnter: EventListener = () => {
+            tabEl.style.outline = "2px solid var(--interactive-accent)";
+            tabEl.style.outlineOffset = "-2px";
+            this._tabHoverTimer = window.setTimeout(async () => {
+                tabEl.style.outline = "";
+                (this.plugin.app as any).workspace.revealLeaf(calLeaf);
+                // Give the view ~80ms to render its drop listeners before the
+                // user reaches the grid
+                await new Promise(r => setTimeout(r, 80));
+            }, 500);
+        };
+
+        const onLeave: EventListener = () => {
+            tabEl.style.outline = "";
+            if (this._tabHoverTimer !== null) {
+                clearTimeout(this._tabHoverTimer);
+                this._tabHoverTimer = null;
+            }
+        };
+
+        const onOver: EventListener = (e) => { (e as DragEvent).preventDefault(); };
+
+        tabEl.addEventListener("dragenter", onEnter);
+        tabEl.addEventListener("dragleave", onLeave);
+        tabEl.addEventListener("dragover",  onOver);
+
+        this._tabHoverListeners = [
+            { el: tabEl, type: "dragenter", fn: onEnter },
+            { el: tabEl, type: "dragleave", fn: onLeave },
+            { el: tabEl, type: "dragover",  fn: onOver  },
+        ];
+    }
+
+    private detachCalendarTabHover() {
+        if (this._tabHoverTimer !== null) {
+            clearTimeout(this._tabHoverTimer);
+            this._tabHoverTimer = null;
+        }
+        for (const { el, type, fn } of this._tabHoverListeners) {
+            el.removeEventListener(type, fn);
+        }
+        this._tabHoverListeners = [];
+        (document.querySelectorAll('.workspace-tab-header') as NodeListOf<HTMLElement>)
+            .forEach(h => { h.style.outline = ""; });
+    }
+
     private renderTaskList() {
         if (!this.taskListEl) return;
         this.taskListEl.empty();
@@ -662,6 +735,7 @@ class TasksPane {
                     project_id:  task.project_id ?? null,
                 }));
                 e.dataTransfer!.effectAllowed = "copy";
+
                 // Ghost label while dragging
                 const ghost = document.createElement("div");
                 ghost.textContent = task.title;
@@ -679,6 +753,16 @@ class TasksPane {
                 document.body.appendChild(ghost);
                 e.dataTransfer?.setDragImage(ghost, 0, 0);
                 setTimeout(() => ghost.remove(), 0);
+
+                // ── Tab-hover activation ──────────────────────────────────────
+                // If the calendar plugin is in the same pane as this plugin,
+                // hovering over its tab header for 500ms will switch to that tab
+                // so the user can then drop the task onto the calendar grid.
+                this.attachCalendarTabHover();
+            });
+
+            item.settingEl.addEventListener("dragend", () => {
+                this.detachCalendarTabHover();
             });
 
             const nameEl = item.nameEl;
