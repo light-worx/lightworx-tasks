@@ -651,6 +651,36 @@ class TasksPane {
             item.settingEl.style.cssText = "padding: 3px 0; border: none; min-height: auto;";
             if (isCompleted) item.settingEl.style.opacity = "0.5";
 
+            // Make the row draggable so it can be dropped onto the calendar grid
+            item.settingEl.draggable = true;
+            item.settingEl.addEventListener("dragstart", (e: DragEvent) => {
+                e.dataTransfer?.setData("application/lightworx-task", JSON.stringify({
+                    id:          task.id,
+                    title:       task.title,
+                    description: task.description ?? null,
+                    status:      task.status,
+                    project_id:  task.project_id ?? null,
+                }));
+                e.dataTransfer!.effectAllowed = "copy";
+                // Ghost label while dragging
+                const ghost = document.createElement("div");
+                ghost.textContent = task.title;
+                ghost.style.cssText = [
+                    "position: fixed",
+                    "top: -100px",
+                    "background: var(--interactive-accent)",
+                    "color: var(--text-on-accent)",
+                    "padding: 4px 8px",
+                    "border-radius: var(--radius-s)",
+                    "font-size: var(--font-ui-small)",
+                    "pointer-events: none",
+                    "white-space: nowrap",
+                ].join("; ");
+                document.body.appendChild(ghost);
+                e.dataTransfer?.setDragImage(ghost, 0, 0);
+                setTimeout(() => ghost.remove(), 0);
+            });
+
             const nameEl = item.nameEl;
             nameEl.empty();
             nameEl.style.cssText = [
@@ -662,7 +692,7 @@ class TasksPane {
                 "flex: 1",
                 "min-width: 0",
             ].join("; ");
-            nameEl.title = "Edit task";
+            nameEl.title = "Click to edit · Drag to calendar";
             nameEl.onclick = editAction;
 
             const dot = document.createElement("div");
