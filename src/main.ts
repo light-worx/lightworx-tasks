@@ -39,7 +39,7 @@ export default class MyTaskPlugin extends Plugin {
     async onload() {
         await this.loadSettings();
         this.registerView(VIEW_TYPE_TASKS, (leaf) => new TaskView(leaf, this));
-        this.addRibbonIcon('list-checks', 'Open Tasks', () => this.activateView());
+        this.addRibbonIcon('list-checks', 'Open Lightworx Tasks', () => this.activateView());
         this.addSettingTab(new MyTasksSettingTab(this.app, this));
     }
 
@@ -185,7 +185,7 @@ class TaskView extends ItemView {
     }
 
     getViewType()    { return VIEW_TYPE_TASKS; }
-    getDisplayText() { return "Tasks"; }
+    getDisplayText() { return "Lightworx Tasks"; }
     getIcon()        { return "check-square"; }
 
     async onOpen() { await this.render(); }
@@ -823,7 +823,18 @@ class ProjectsPane {
     private newProjectDesc: string = "";
     private cachedProjectTasks: any[] = [];
     private projectTaskListEl: HTMLElement | null = null;
+    private detailContainer: HTMLElement | null = null;
+    private detailWrapper: HTMLElement | null = null;
     private statuses: any[] = [];
+
+    // Task edit form state (within project detail view)
+    private showTaskForm: boolean = false;
+    private editingTaskId: string | null = null;
+    private currentTitle: string = "";
+    private currentDesc: string = "";
+    private currentStatus: string = "";
+    private currentDueAt: string = "";
+    private formJustOpened: boolean = false;
 
     constructor(plugin: MyTaskPlugin) {
         this.plugin = plugin;
@@ -1017,7 +1028,10 @@ class ProjectsPane {
     }
 
     private async renderProjectDetail(wrapper: HTMLElement, container: HTMLElement, projects: any[]) {
-        // ── BACK + TITLE ──────────────────────────────────────────────────────
+        this.detailContainer = container;
+        this.detailWrapper   = wrapper;
+
+        // ── BACK + TITLE + ADD BUTTON ─────────────────────────────────────────
         const header = wrapper.createDiv();
         header.style.cssText = "display: flex; align-items: center; gap: 8px;";
 
@@ -1033,17 +1047,52 @@ class ProjectsPane {
         backBtn.onclick = () => {
             this.selectedProject = null;
             this.cachedProjectTasks = [];
+            this.showTaskForm = false;
+            this.editingTaskId = null;
             this.mount(container);
         };
 
         const titleEl = header.createEl("span");
         titleEl.textContent = this.selectedProject.name;
-        titleEl.style.cssText = "font-size: var(--font-ui-small); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+        titleEl.style.cssText = "font-size: var(--font-ui-small); font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+
+        const addBtn = header.createEl("button", { text: "+" });
+        addBtn.style.cssText = [
+            "height: 26px",
+            "width: 26px",
+            "font-size: 16px",
+            "line-height: 1",
+            "padding: 0",
+            "border: none",
+            "border-radius: var(--radius-s)",
+            "background: var(--interactive-accent)",
+            "color: var(--text-on-accent)",
+            "cursor: pointer",
+            "flex-shrink: 0",
+        ].join("; ");
+        addBtn.title = "New task in this project";
+        addBtn.onclick = () => {
+            if (!this.showTaskForm || this.editingTaskId) {
+                this.editingTaskId = null;
+                this.currentTitle = "";
+                this.currentDesc = "";
+                this.currentDueAt = "";
+                this.currentStatus = this.statuses[0]?.label ?? "";
+                this.formJustOpened = true;
+            }
+            this.showTaskForm = !this.showTaskForm;
+            this.mount(container);
+        };
 
         if (this.selectedProject.description) {
             const descEl = wrapper.createEl("p");
             descEl.textContent = this.selectedProject.description;
             descEl.style.cssText = "margin: 0; font-size: var(--font-ui-smaller); color: var(--text-muted);";
+        }
+
+        // ── TASK FORM ─────────────────────────────────────────────────────────
+        if (this.showTaskForm) {
+            this.renderTaskForm(wrapper, container);
         }
 
         // ── PROJECT TASK LIST ─────────────────────────────────────────────────
@@ -1052,8 +1101,6 @@ class ProjectsPane {
         try {
             const email = this.plugin.settings.userEmail;
             const params = new URLSearchParams({ project_id: this.selectedProject.id });
-            // owner_email unlocks visibility of private projects in the API.
-            // assigned_email is included for clients with can_lookup_assigned_tasks.
             if (email) {
                 params.set('assigned_email', email);
                 params.set('owner_email', email);
@@ -1066,6 +1113,112 @@ class ProjectsPane {
         }
 
         this.renderProjectTaskList(projects);
+    }
+
+    private renderTaskForm(wrapper: HTMLElement, container: HTMLElement) {
+        const formLabel = wrapper.createEl("p");
+        formLabel.style.cssText = [
+            "margin: 0",
+            "font-size: var(--font-ui-smaller)",
+            "font-weight: 600",
+            "letter-spacing: 0.05em",
+            "text-transform: uppercase",
+            "color: var(--text-muted)",
+        ].join("; ");
+        formLabel.setText(this.editingTaskId ? "Edit task" : "New task");
+
+        const formEl = wrapper.createDiv();
+        formEl.style.cssText = [
+            "background: var(--background-secondary)",
+            "border-radius: var(--radius-m)",
+            "padding: 10px",
+            "display: flex",
+            "flex-direction: column",
+            "gap: 6px",
+            "box-shadow: var(--shadow-s)",
+        ].join("; ");
+
+        const titleIn = formEl.createEl("input", { type: "text", placeholder: "Task title..." });
+        titleIn.style.cssText = S.input;
+        titleIn.value = this.currentTitle;
+        titleIn.oninput = () => { this.currentTitle = titleIn.value; };
+        if (this.formJustOpened) {
+            this.formJustOpened = false;
+            setTimeout(() => titleIn.focus(), 0);
+        }
+
+        const descIn = formEl.createEl("textarea", { placeholder: "Description (optional)..." });
+        descIn.style.cssText = "width: 100%; height: 60px; font-size: var(--font-ui-small); box-sizing: border-box; resize: none;";
+        descIn.value = this.currentDesc;
+        descIn.oninput = () => { this.currentDesc = descIn.value; };
+
+        const dueIn = formEl.createEl("input", { type: "datetime-local" });
+        dueIn.style.cssText = S.input;
+        if (this.currentDueAt) dueIn.value = this.currentDueAt;
+        dueIn.oninput = () => { this.currentDueAt = dueIn.value; };
+
+        const controlRow = formEl.createDiv();
+        controlRow.style.cssText = "display: flex; gap: 6px; align-items: center;";
+
+        const statusSel = controlRow.createEl("select");
+        statusSel.style.cssText = "flex: 1; height: 30px; font-size: var(--font-ui-small);";
+        this.statuses.forEach((s: any) => {
+            const opt = statusSel.createEl("option", { text: s.label, value: s.label });
+            if (s.label === this.currentStatus) opt.selected = true;
+        });
+        statusSel.onchange = () => { this.currentStatus = statusSel.value; };
+
+        const cancelBtn = controlRow.createEl("button", { text: "Cancel" });
+        cancelBtn.style.cssText = "height: 30px; font-size: var(--font-ui-small); padding: 0 8px;";
+        cancelBtn.onclick = () => {
+            this.showTaskForm = false;
+            this.editingTaskId = null;
+            this.currentTitle = "";
+            this.currentDesc = "";
+            this.currentDueAt = "";
+            this.mount(container);
+        };
+
+        const saveBtn = controlRow.createEl("button", {
+            text: this.editingTaskId ? "Save" : "Add",
+            cls: "mod-cta"
+        });
+        saveBtn.style.cssText = "height: 30px; font-size: var(--font-ui-small); padding: 0 12px;";
+        saveBtn.onclick = async () => {
+            if (!this.currentTitle.trim()) { new Notice("Title is required"); return; }
+
+            const payload: any = {
+                title: this.currentTitle,
+                description: this.currentDesc || null,
+                assigned_email: this.plugin.settings.userEmail,
+                status: this.currentStatus,
+                project_id: this.selectedProject.id,
+            };
+            if (this.currentDueAt) payload.due_at = new Date(this.currentDueAt).toISOString();
+
+            try {
+                if (this.editingTaskId) {
+                    const email = this.plugin.settings.userEmail;
+                    const qs = email
+                        ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
+                        : '';
+                    await this.plugin.apiRequest(`tasks/${this.editingTaskId}${qs}`, 'PUT', payload);
+                    new Notice("Task updated");
+                } else {
+                    await this.plugin.apiRequest('tasks', 'POST', payload);
+                    new Notice("Task added");
+                }
+                this.showTaskForm = false;
+                this.editingTaskId = null;
+                this.currentTitle = "";
+                this.currentDesc = "";
+                this.currentDueAt = "";
+                await this.mount(container);
+            } catch (e) {
+                new Notice("Failed to save task");
+                console.error(e);
+            }
+        };
     }
 
     private renderProjectTaskList(projects: any[]) {
@@ -1083,13 +1236,53 @@ class ProjectsPane {
             const statusColor = statusInfo?.colour || 'var(--text-muted)';
             const isCompleted = task.status?.toLowerCase() === 'completed';
 
-            const item = new Setting(this.projectTaskListEl!);
+            const editAction = () => {
+                this.editingTaskId  = task.id;
+                this.currentTitle   = task.title;
+                this.currentDesc    = task.description || "";
+                this.currentStatus  = task.status;
+                this.currentDueAt   = task.due_at ? task.due_at.slice(0, 16) : "";
+                this.showTaskForm   = true;
+                this.formJustOpened = true;
+                this.mount(this.detailContainer!);
+            };
+
+            const item = new Setting(this.projectTaskListEl!)
+                .addExtraButton(btn => {
+                    btn.setIcon("trash").setTooltip("Delete").onClick(async () => {
+                        if (confirm("Delete task?")) {
+                            try {
+                                const email = this.plugin.settings.userEmail;
+                                const qs = email
+                                    ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
+                                    : '';
+                                await this.plugin.apiRequest(`tasks/${task.id}${qs}`, 'DELETE');
+                                this.cachedProjectTasks = this.cachedProjectTasks.filter((t: any) => t.id !== task.id);
+                                this.renderProjectTaskList(projects);
+                            } catch (e: any) {
+                                new Notice(`Failed to delete task (${e.status ?? 'error'})`);
+                                console.error("Delete failed", e);
+                            }
+                        }
+                    });
+                });
+
             item.settingEl.style.cssText = "padding: 3px 0; border: none; min-height: auto;";
             if (isCompleted) item.settingEl.style.opacity = "0.5";
 
             const nameEl = item.nameEl;
             nameEl.empty();
-            nameEl.style.cssText = "font-size: var(--font-ui-small); display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;";
+            nameEl.style.cssText = [
+                "font-size: var(--font-ui-small)",
+                "display: flex",
+                "align-items: center",
+                "gap: 8px",
+                "cursor: pointer",
+                "flex: 1",
+                "min-width: 0",
+            ].join("; ");
+            nameEl.title = "Click to edit";
+            nameEl.onclick = editAction;
 
             const dot = document.createElement("div");
             dot.style.cssText = `width: 7px; height: 7px; border-radius: 50%; background-color: ${statusColor}; flex-shrink: 0;`;
