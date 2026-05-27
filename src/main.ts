@@ -275,25 +275,14 @@ class TasksPane {
         this.plugin = plugin;
     }
 
-    async mount(container: HTMLElement) {
+    mount(container: HTMLElement) {
         this.mountContainer = container;
         container.empty();
         this.taskListEl = null;
 
-        // Use whatever statuses/projects we already have in memory — don't
-        // block rendering on network fetches. If we have nothing yet (very
-        // first ever load) kick off the fetch and wait briefly, but only once.
-        const needsMeta     = !this.plugin.metaData;
-        const needsProjects = this.plugin.projects.length === 0;
-        if (needsMeta || needsProjects) {
-            await Promise.all([
-                needsMeta     ? this.plugin.fetchMeta()     : Promise.resolve(),
-                needsProjects ? this.plugin.fetchProjects() : Promise.resolve(),
-            ]);
-        }
-
-        this.statuses = this.plugin.metaData?.statuses || [];
-        this.projects = this.plugin.projects || [];
+        // Use whatever we already have in memory — never block the initial paint.
+        this.statuses = this.plugin.metaData?.statuses || this.statuses;
+        this.projects = this.plugin.projects.length > 0 ? this.plugin.projects : this.projects;
 
         if (!this.currentStatus && this.statuses.length > 0) {
             this.currentStatus = this.statuses[0].label;
@@ -363,17 +352,26 @@ class TasksPane {
         // ── TASK LIST ─────────────────────────────────────────────────────────
         this.taskListEl = wrapper.createDiv();
 
-        // ── STALE-WHILE-REVALIDATE ────────────────────────────────────────────
-        // Render persisted cache instantly — the pane is never blank on open.
+        // ── RENDER CACHE SYNCHRONOUSLY ────────────────────────────────────────
+        // Populate from cache immediately — this runs in the same tick as the
+        // DOM build above so the pane is never blank, even for a single frame.
         const persisted = this.plugin.cachedTasksStore;
         if (persisted.length > 0) {
             this.cachedTasks = persisted;
             this.renderTaskList();
+        } else if (this.cachedTasks.length > 0) {
+            // Already loaded this session (e.g. switching tabs and back)
+            this.renderTaskList();
+        } else {
+            // Genuinely first load with no cache — show placeholder
+            const placeholder = this.taskListEl.createEl("p", { text: "Loading tasks…" });
+            placeholder.style.cssText = "text-align: center; color: var(--text-muted); font-size: var(--font-ui-small); margin: 20px 0;";
         }
 
-        // Always kick off a background refresh (skip only if form is open).
+        // ── BACKGROUND REFRESH ────────────────────────────────────────────────
+        // Fired without await so it never delays the return of mount().
+        // The refresh dot gives feedback; the list updates only if data changed.
         if (!this.showForm) {
-            // Refresh dot signals an in-flight update to the user
             const refreshDot = toolbar.createEl("span");
             refreshDot.title = "Refreshing…";
             refreshDot.style.cssText = [
@@ -386,45 +384,61 @@ class TasksPane {
                 "align-self: center",
             ].join("; ");
 
-            // Fire meta, projects, and tasks refreshes in parallel
-            const taskFetch = (async () => {
-                const email  = this.plugin.settings.userEmail;
-                const params = email
-                    ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
-                    : '';
-                const res = await this.plugin.apiRequest(`tasks${params}`);
-                return (res.data || []) as any[];
-            })();
+            (async () => {
+                try {
+                    const email  = this.plugin.settings.userEmail;
+                    const params = email
+                        ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
+                        : '';
 
-            const metaRefresh     = this.plugin.fetchMeta();
-            const projectsRefresh = this.plugin.fetchProjects();
+                    const [fresh] = await Promise.all([
+                        this.plugin.apiRequest(`tasks${params}`).then(r => (r.data || []) as any[]),
+                        this.plugin.fetchMeta(),
+                        this.plugin.fetchProjects(),
+                    ]);
 
-            try {
-                const [fresh] = await Promise.all([taskFetch, metaRefresh, projectsRefresh]);
+                    // Update statuses/projects dropdown if they changed
+                    const newStatuses = this.plugin.metaData?.statuses || [];
+                    if (JSON.stringify(newStatuses) !== JSON.stringify(this.statuses)) {
+                        this.statuses = newStatuses;
+                        // Rebuild filter dropdown options
+                        filterSel.empty();
+                        filterSel.createEl("option", { text: "All", value: "all" });
+                        this.statuses.forEach((s: any) => {
+                            const opt = filterSel.createEl("option", { text: s.label, value: s.label });
+                            if (this.filterStatus === s.label) opt.selected = true;
+                        });
+                    }
+                    this.projects = this.plugin.projects.length > 0
+                        ? this.plugin.projects : this.projects;
 
-                // Update statuses/projects in case they changed
-                this.statuses = this.plugin.metaData?.statuses || this.statuses;
-                this.projects = this.plugin.projects.length > 0 ? this.plugin.projects : this.projects;
+                    // Update task list only if data changed
+                    if (JSON.stringify(fresh) !== JSON.stringify(this.cachedTasks)) {
+                        this.cachedTasks = fresh;
+                        this.renderTaskList();
+                    } else {
+                        // Remove "Loading tasks…" placeholder if it's still there
+                        this.taskListEl?.querySelectorAll("p").forEach(p => {
+                            if (p.textContent === "Loading tasks…") p.remove();
+                        });
+                        if (this.cachedTasks.length === 0) this.renderTaskList();
+                    }
 
-                // Re-render only if task data changed
-                if (JSON.stringify(fresh) !== JSON.stringify(this.cachedTasks)) {
-                    this.cachedTasks = fresh;
-                    this.renderTaskList();
-                }
-                await this.plugin.persistTaskCache(fresh);
-                refreshDot.remove();
-            } catch (e) {
-                if (persisted.length === 0) {
-                    // No cache and network failed — show an error
-                    this.taskListEl.createEl("p", { text: "Could not load tasks." })
-                        .style.cssText = "text-align: center; color: var(--text-muted); font-size: var(--font-ui-small); margin: 20px 0;";
-                } else {
-                    // Cache is visible — just signal the failure on the dot
+                    await this.plugin.persistTaskCache(fresh);
+                    refreshDot.remove();
+                } catch (e) {
+                    if (this.cachedTasks.length === 0) {
+                        if (this.taskListEl) {
+                            this.taskListEl.empty();
+                            this.taskListEl.createEl("p", { text: "Could not load tasks." })
+                                .style.cssText = "text-align: center; color: var(--text-muted); font-size: var(--font-ui-small); margin: 20px 0;";
+                        }
+                    }
                     refreshDot.style.background = "var(--color-orange)";
                     refreshDot.style.opacity = "1";
                     refreshDot.title = "Could not refresh — showing cached data";
                 }
-            }
+            })();
         }
     }
 
