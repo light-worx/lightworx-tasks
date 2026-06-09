@@ -151,6 +151,77 @@ export default class MyTaskPlugin extends Plugin {
 // Shared style helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Replace `rowEl` with an inline "Delete X? / Yes / No" confirmation bar.
+ * On confirm, calls `onConfirm`. On cancel, restores the original row.
+ * This keeps all UI within the panel rather than using window.confirm().
+ */
+function inlineConfirmDelete(
+    rowEl: HTMLElement,
+    label: string,
+    onConfirm: () => Promise<void>
+) {
+    const bar = document.createElement("div");
+    bar.style.cssText = [
+        "display: flex",
+        "align-items: center",
+        "gap: 8px",
+        "padding: 3px 0",
+        "font-size: var(--font-ui-small)",
+    ].join("; ");
+
+    const msg = document.createElement("span");
+    msg.style.cssText = "flex: 1; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+    msg.textContent = `Delete "${label}"?`;
+    bar.appendChild(msg);
+
+    const yesBtn = document.createElement("button");
+    yesBtn.textContent = "Delete";
+    yesBtn.style.cssText = [
+        "height: 22px",
+        "padding: 0 8px",
+        "font-size: var(--font-ui-smaller)",
+        "background: var(--color-red)",
+        "color: #fff",
+        "border: none",
+        "border-radius: var(--radius-s)",
+        "cursor: pointer",
+        "flex-shrink: 0",
+    ].join("; ");
+
+    const noBtn = document.createElement("button");
+    noBtn.textContent = "Cancel";
+    noBtn.style.cssText = [
+        "height: 22px",
+        "padding: 0 8px",
+        "font-size: var(--font-ui-smaller)",
+        "background: var(--background-modifier-border)",
+        "color: var(--text-muted)",
+        "border: none",
+        "border-radius: var(--radius-s)",
+        "cursor: pointer",
+        "flex-shrink: 0",
+    ].join("; ");
+
+    bar.appendChild(yesBtn);
+    bar.appendChild(noBtn);
+
+    // Swap the row for the confirmation bar
+    rowEl.style.display = "none";
+    rowEl.parentElement?.insertBefore(bar, rowEl.nextSibling);
+
+    yesBtn.onclick = async () => {
+        bar.remove();
+        rowEl.style.display = "";
+        await onConfirm();
+    };
+
+    noBtn.onclick = () => {
+        bar.remove();
+        rowEl.style.display = "";
+    };
+}
+
 const S = {
     input:   "width: 100%; height: 30px; font-size: var(--font-ui-small); box-sizing: border-box;",
     btnMuted: [
@@ -720,22 +791,21 @@ class TasksPane {
             };
 
             const item = new Setting(this.taskListEl!).addExtraButton(btn => {
-                btn.setIcon("trash").setTooltip("Delete").onClick(async () => {
-                    if (confirm("Delete task?")) {
+                btn.setIcon("trash").setTooltip("Delete").onClick(() => {
+                    inlineConfirmDelete(item.settingEl, task.title, async () => {
                         try {
                             const email = this.plugin.settings.userEmail;
                             const qs = email
                                 ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
                                 : '';
                             await this.plugin.apiRequest(`tasks/${task.id}${qs}`, 'DELETE');
-                            // Remove from cache and redraw without a full API re-fetch
                             this.cachedTasks = this.cachedTasks.filter((t: any) => t.id !== task.id);
                             this.renderTaskList();
-                        } catch (e) {
+                        } catch (e: any) {
                             new Notice(`Failed to delete task (${e.status ?? 'error'})`);
                             console.error("Delete failed", e);
                         }
-                    }
+                    });
                 });
             });
 
@@ -1267,8 +1337,8 @@ class ProjectsPane {
 
             const item = new Setting(this.projectTaskListEl!)
                 .addExtraButton(btn => {
-                    btn.setIcon("trash").setTooltip("Delete").onClick(async () => {
-                        if (confirm("Delete task?")) {
+                    btn.setIcon("trash").setTooltip("Delete").onClick(() => {
+                        inlineConfirmDelete(item.settingEl, task.title, async () => {
                             try {
                                 const email = this.plugin.settings.userEmail;
                                 const qs = email
@@ -1281,7 +1351,7 @@ class ProjectsPane {
                                 new Notice(`Failed to delete task (${e.status ?? 'error'})`);
                                 console.error("Delete failed", e);
                             }
-                        }
+                        });
                     });
                 });
 
