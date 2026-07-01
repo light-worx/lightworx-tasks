@@ -53,6 +53,8 @@ export default class MyTaskPlugin extends Plugin {
         try {
             const response = await this.apiRequest('meta/task-statuses');
             this.metaData = { statuses: response.statuses ?? response };
+            // Persist so colours are available immediately on next startup
+            await this.saveSettings();
         } catch (e) {
             console.error("Failed to fetch meta", e);
         }
@@ -129,12 +131,17 @@ export default class MyTaskPlugin extends Plugin {
         const data = await this.loadData() ?? {};
         this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
         this.cachedTasksStore = data.cachedTasks ?? [];
+        // Restore persisted statuses so dot colours are correct before network
+        if (data.cachedStatuses?.length) {
+            this.metaData = { statuses: data.cachedStatuses };
+        }
     }
 
     async saveSettings() {
         await this.saveData({
             ...this.settings,
-            cachedTasks: this.cachedTasksStore,
+            cachedTasks:    this.cachedTasksStore,
+            cachedStatuses: this.metaData?.statuses ?? [],
         });
     }
 
