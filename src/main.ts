@@ -780,7 +780,7 @@ class TasksPane {
         tasks.forEach((task: any) => {
             const statusInfo   = this.statuses.find((s: any) => s.label === task.status);
             const statusColor  = statusInfo?.colour || 'var(--text-muted)';
-            const isCompleted  = task.status?.toLowerCase() === 'completed';
+            const isCompleted  = ['done', 'completed'].includes(task.status?.toLowerCase() ?? '');
             const projectName  = task.project_id
                 ? (this.projects.find((p: any) => p.id === task.project_id)?.name ?? null)
                 : null;
@@ -1329,7 +1329,7 @@ class ProjectsPane {
         this.cachedProjectTasks.forEach((task: any) => {
             const statusInfo  = this.statuses.find((s: any) => s.label === task.status);
             const statusColor = statusInfo?.colour || 'var(--text-muted)';
-            const isCompleted = task.status?.toLowerCase() === 'completed';
+            const isCompleted = ['done', 'completed'].includes(task.status?.toLowerCase() ?? '');
 
             const editAction = () => {
                 this.editingTaskId  = task.id;
