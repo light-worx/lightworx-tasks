@@ -363,7 +363,7 @@ class TasksPane {
         this.projects = this.plugin.projects.length > 0 ? this.plugin.projects : this.projects;
 
         if (!this.currentStatus && this.statuses.length > 0) {
-            this.currentStatus = this.statuses[0].label;
+            this.currentStatus = String(this.statuses[0].id);
         }
 
         const wrapper = container.createDiv({
@@ -386,8 +386,8 @@ class TasksPane {
         filterSel.style.cssText = "height: 26px; font-size: var(--font-ui-small); max-width: 90px;";
         filterSel.createEl("option", { text: "All", value: "all" });
         this.statuses.forEach((s: any) => {
-            const opt = filterSel.createEl("option", { text: s.label, value: s.label });
-            if (this.filterStatus === s.label) opt.selected = true;
+            const opt = filterSel.createEl("option", { text: s.label, value: String(s.id) });
+            if (this.filterStatus === String(s.id)) opt.selected = true;
         });
         filterSel.onchange = () => {
             this.filterStatus = filterSel.value;
@@ -415,7 +415,7 @@ class TasksPane {
                 this.currentTitle = "";
                 this.currentDesc = "";
                 this.currentProjectId = "";
-                this.currentStatus = this.statuses[0]?.label ?? "";
+                this.currentStatus = String(this.statuses[0]?.id ?? "");
             }
             this.formJustOpened = !this.showForm;
             this.showForm = !this.showForm;
@@ -483,8 +483,8 @@ class TasksPane {
                         filterSel.empty();
                         filterSel.createEl("option", { text: "All", value: "all" });
                         this.statuses.forEach((s: any) => {
-                            const opt = filterSel.createEl("option", { text: s.label, value: s.label });
-                            if (this.filterStatus === s.label) opt.selected = true;
+                            const opt = filterSel.createEl("option", { text: s.label, value: String(s.id) });
+                            if (this.filterStatus === String(s.id)) opt.selected = true;
                         });
                     }
                     this.projects = this.plugin.projects.length > 0
@@ -597,8 +597,8 @@ class TasksPane {
         const statusSel = controlRow.createEl("select");
         statusSel.style.cssText = "flex: 1; height: 30px; font-size: var(--font-ui-small);";
         this.statuses.forEach((s: any) => {
-            const opt = statusSel.createEl("option", { text: s.label, value: s.label });
-            if (s.label === this.currentStatus) opt.selected = true;
+            const opt = statusSel.createEl("option", { text: s.label, value: String(s.id) });
+            if (String(s.id) === this.currentStatus) opt.selected = true;
         });
         statusSel.onchange = () => { this.currentStatus = statusSel.value; };
 
@@ -778,9 +778,10 @@ class TasksPane {
         }
 
         tasks.forEach((task: any) => {
-            const statusInfo   = this.statuses.find((s: any) => s.label === task.status);
+            const statusInfo   = this.statuses.find((s: any) => String(s.id) === String(task.status));
             const statusColor  = statusInfo?.colour || 'var(--text-muted)';
-            const isCompleted  = ['done', 'completed'].includes(task.status?.toLowerCase() ?? '');
+            const doneStatus   = this.statuses.find((s: any) => ['done', 'completed'].includes(s.label?.toLowerCase() ?? ''));
+            const isCompleted  = doneStatus ? String(task.status) === String(doneStatus.id) : false;
             const projectName  = task.project_id
                 ? (this.projects.find((p: any) => p.id === task.project_id)?.name ?? null)
                 : null;
@@ -789,7 +790,7 @@ class TasksPane {
                 this.editingTaskId    = task.id;
                 this.currentTitle     = task.title;
                 this.currentDesc      = task.description || "";
-                this.currentStatus    = task.status;
+                this.currentStatus    = String(task.status);
                 this.currentProjectId = task.project_id || "";
                 this.currentDueAt     = task.due_at ? task.due_at.slice(0, 16) : "";
                 this.showForm         = true;
@@ -1172,7 +1173,7 @@ class ProjectsPane {
                 this.currentTitle = "";
                 this.currentDesc = "";
                 this.currentDueAt = "";
-                this.currentStatus = this.statuses[0]?.label ?? "";
+                this.currentStatus = String(this.statuses[0]?.id ?? "");
                 this.formJustOpened = true;
             }
             this.showTaskForm = !this.showTaskForm;
@@ -1258,8 +1259,8 @@ class ProjectsPane {
         const statusSel = controlRow.createEl("select");
         statusSel.style.cssText = "flex: 1; height: 30px; font-size: var(--font-ui-small);";
         this.statuses.forEach((s: any) => {
-            const opt = statusSel.createEl("option", { text: s.label, value: s.label });
-            if (s.label === this.currentStatus) opt.selected = true;
+            const opt = statusSel.createEl("option", { text: s.label, value: String(s.id) });
+            if (String(s.id) === this.currentStatus) opt.selected = true;
         });
         statusSel.onchange = () => { this.currentStatus = statusSel.value; };
 
@@ -1327,15 +1328,16 @@ class ProjectsPane {
         }
 
         this.cachedProjectTasks.forEach((task: any) => {
-            const statusInfo  = this.statuses.find((s: any) => s.label === task.status);
+            const statusInfo  = this.statuses.find((s: any) => String(s.id) === String(task.status));
             const statusColor = statusInfo?.colour || 'var(--text-muted)';
-            const isCompleted = ['done', 'completed'].includes(task.status?.toLowerCase() ?? '');
+            const doneStatus  = this.statuses.find((s: any) => ['done', 'completed'].includes(s.label?.toLowerCase() ?? ''));
+            const isCompleted = doneStatus ? String(task.status) === String(doneStatus.id) : false;
 
             const editAction = () => {
                 this.editingTaskId  = task.id;
                 this.currentTitle   = task.title;
                 this.currentDesc    = task.description || "";
-                this.currentStatus  = task.status;
+                this.currentStatus  = String(task.status);
                 this.currentDueAt   = task.due_at ? task.due_at.slice(0, 16) : "";
                 this.showTaskForm   = true;
                 this.formJustOpened = true;
