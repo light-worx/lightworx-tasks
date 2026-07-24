@@ -35,6 +35,7 @@ export default class MyTaskPlugin extends Plugin {
     accessToken: string | null = null;
     metaData: any = null;
     projects: any[] = [];
+    contexts: any[] = [];
 
     async onload() {
         await this.loadSettings();
@@ -57,6 +58,20 @@ export default class MyTaskPlugin extends Plugin {
             await this.saveSettings();
         } catch (e) {
             console.error("Failed to fetch meta", e);
+        }
+    }
+
+    async fetchContexts() {
+        try {
+            const email = this.settings.userEmail;
+            if (!email) return;
+            const response = await this.apiRequest(
+                `contexts?owner_email=${encodeURIComponent(email)}`
+            );
+            this.contexts = Array.isArray(response) ? response : (response.data ?? []);
+            await this.saveSettings();
+        } catch (e) {
+            console.error("Failed to fetch contexts", e);
         }
     }
 
@@ -131,9 +146,11 @@ export default class MyTaskPlugin extends Plugin {
         const data = await this.loadData() ?? {};
         this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
         this.cachedTasksStore = data.cachedTasks ?? [];
-        // Restore persisted statuses so dot colours are correct before network
         if (data.cachedStatuses?.length) {
             this.metaData = { statuses: data.cachedStatuses };
+        }
+        if (data.cachedContexts?.length) {
+            this.contexts = data.cachedContexts;
         }
     }
 
@@ -142,6 +159,7 @@ export default class MyTaskPlugin extends Plugin {
             ...this.settings,
             cachedTasks:    this.cachedTasksStore,
             cachedStatuses: this.metaData?.statuses ?? [],
+            cachedContexts: this.contexts,
         });
     }
 
@@ -336,6 +354,7 @@ class TasksPane {
     private currentStatus: string = "";
     private currentProjectId: string = "";
     private currentDueAt: string = "";
+    private currentContextId: number | null = null;
 
     // List state
     private searchQuery: string = "";
@@ -348,6 +367,10 @@ class TasksPane {
     // Cached for re-renders
     private statuses: any[] = [];
     private projects: any[] = [];
+    private contexts: any[] = [];
+
+    // Context filter
+    private filterContext: string = "all";
 
     constructor(plugin: MyTaskPlugin) {
         this.plugin = plugin;
@@ -361,6 +384,7 @@ class TasksPane {
         // Use whatever we already have in memory — never block the initial paint.
         this.statuses = this.plugin.metaData?.statuses || this.statuses;
         this.projects = this.plugin.projects.length > 0 ? this.plugin.projects : this.projects;
+        this.contexts = this.plugin.contexts.length > 0 ? this.plugin.contexts : this.contexts;
 
         if (!this.currentStatus && this.statuses.length > 0) {
             this.currentStatus = String(this.statuses[0].id);
@@ -391,6 +415,18 @@ class TasksPane {
         });
         filterSel.onchange = () => {
             this.filterStatus = filterSel.value;
+            this.renderTaskList();
+        };
+
+        const contextSel = toolbar.createEl("select");
+        contextSel.style.cssText = "height: 26px; font-size: var(--font-ui-small); max-width: 80px;";
+        contextSel.createEl("option", { text: "@all", value: "all" });
+        this.contexts.forEach((c: any) => {
+            const opt = contextSel.createEl("option", { text: c.label, value: String(c.id) });
+            if (this.filterContext === String(c.id)) opt.selected = true;
+        });
+        contextSel.onchange = () => {
+            this.filterContext = contextSel.value;
             this.renderTaskList();
         };
 
@@ -473,6 +509,7 @@ class TasksPane {
                         this.plugin.apiRequest(`tasks${params}`).then(r => (r.data || []) as any[]),
                         this.plugin.fetchMeta(),
                         this.plugin.fetchProjects(),
+                        this.plugin.fetchContexts(),
                     ]);
 
                     // Update statuses/projects dropdown if they changed
@@ -489,6 +526,15 @@ class TasksPane {
                     }
                     this.projects = this.plugin.projects.length > 0
                         ? this.plugin.projects : this.projects;
+                    this.contexts = this.plugin.contexts.length > 0
+                        ? this.plugin.contexts : this.contexts;
+                    // Rebuild context dropdown if contexts changed
+                    contextSel.empty();
+                    contextSel.createEl("option", { text: "@all", value: "all" });
+                    this.contexts.forEach((c: any) => {
+                        const opt = contextSel.createEl("option", { text: c.label, value: String(c.id) });
+                        if (this.filterContext === String(c.id)) opt.selected = true;
+                    });
 
                     // Update task list only if data changed
                     if (JSON.stringify(fresh) !== JSON.stringify(this.cachedTasks)) {
@@ -578,6 +624,20 @@ class TasksPane {
             calLabel.style.cssText = "font-size: 15px; flex-shrink: 0;";
         }
 
+        // Context selector
+        if (this.contexts.length > 0) {
+            const contextSel = formContainer.createEl("select");
+            contextSel.style.cssText = S.input;
+            contextSel.createEl("option", { text: "No context", value: "" }).selected = !this.currentContextId;
+            this.contexts.forEach((c: any) => {
+                const opt = contextSel.createEl("option", { text: c.label, value: String(c.id) });
+                if (this.currentContextId && String(c.id) === String(this.currentContextId)) opt.selected = true;
+            });
+            contextSel.onchange = () => {
+                this.currentContextId = contextSel.value ? Number(contextSel.value) : null;
+            };
+        }
+
         // Project selector
         if (this.projects.length > 0) {
             const projectSel = formContainer.createEl("select");
@@ -629,6 +689,8 @@ class TasksPane {
             };
             if (this.currentProjectId) payload.project_id = this.currentProjectId;
             if (this.currentDueAt)     payload.due_at = new Date(this.currentDueAt).toISOString();
+            // Preserve context_id — pass it through even if null so it isn't dropped
+            payload.context_id = this.currentContextId;
 
             try {
                 const isNew = !this.editingTaskId;
@@ -674,6 +736,7 @@ class TasksPane {
                 this.currentDesc = "";
                 this.currentProjectId = "";
                 this.currentDueAt = "";
+                this.currentContextId = null;
                 await this.mount(mountContainer);
             } catch (e) {
                 new Notice("Failed to save task");
@@ -762,7 +825,10 @@ class TasksPane {
         let tasks = [...this.cachedTasks];
 
         if (this.filterStatus !== "all") {
-            tasks = tasks.filter((t: any) => t.status === this.filterStatus);
+            tasks = tasks.filter((t: any) => String(t.status) === this.filterStatus);
+        }
+        if (this.filterContext !== "all") {
+            tasks = tasks.filter((t: any) => String(t.context_id) === this.filterContext);
         }
         if (this.searchQuery) {
             tasks = tasks.filter((t: any) =>
@@ -793,6 +859,7 @@ class TasksPane {
                 this.currentStatus    = String(task.status);
                 this.currentProjectId = task.project_id || "";
                 this.currentDueAt     = task.due_at ? task.due_at.slice(0, 16) : "";
+                this.currentContextId = task.context_id ?? null;
                 this.showForm         = true;
                 this.formJustOpened   = true;
                 this.mount(this.mountContainer!);
@@ -903,6 +970,26 @@ class TasksPane {
                 ].join("; ");
                 nameEl.appendChild(badge);
             }
+
+            // Context badge
+            const contextInfo = task.context_id
+                ? this.contexts.find((c: any) => c.id === task.context_id)
+                : null;
+            if (contextInfo) {
+                const ctxBadge = document.createElement("span");
+                ctxBadge.textContent = contextInfo.label;
+                ctxBadge.style.cssText = [
+                    "font-size: var(--font-ui-smaller)",
+                    "font-weight: 500",
+                    "border-radius: var(--radius-s)",
+                    "padding: 1px 5px",
+                    "white-space: nowrap",
+                    "flex-shrink: 0",
+                    `color: ${contextInfo.colour || 'var(--text-muted)'}`,
+                    `background: ${contextInfo.colour ? contextInfo.colour + '22' : 'var(--background-modifier-border)'}`,
+                ].join("; ");
+                nameEl.appendChild(ctxBadge);
+            }
         });
     }
 }
@@ -922,6 +1009,7 @@ class ProjectsPane {
     private detailContainer: HTMLElement | null = null;
     private detailWrapper: HTMLElement | null = null;
     private statuses: any[] = [];
+    private contexts: any[] = [];
 
     // Task edit form state (within project detail view)
     private showTaskForm: boolean = false;
@@ -930,6 +1018,7 @@ class ProjectsPane {
     private currentDesc: string = "";
     private currentStatus: string = "";
     private currentDueAt: string = "";
+    private currentContextId: number | null = null;
     private formJustOpened: boolean = false;
 
     constructor(plugin: MyTaskPlugin) {
@@ -945,6 +1034,7 @@ class ProjectsPane {
         await Promise.all([metaPromise, projectsPromise]);
 
         this.statuses = this.plugin.metaData?.statuses || [];
+        this.contexts = this.plugin.contexts.length > 0 ? this.plugin.contexts : this.contexts;
         const projects = this.plugin.projects || [];
 
         const wrapper = container.createDiv({
@@ -1253,6 +1343,20 @@ class ProjectsPane {
         if (this.currentDueAt) dueIn.value = this.currentDueAt;
         dueIn.oninput = () => { this.currentDueAt = dueIn.value; };
 
+        // Context selector
+        if (this.contexts.length > 0) {
+            const contextSel = formEl.createEl("select");
+            contextSel.style.cssText = S.input;
+            contextSel.createEl("option", { text: "No context", value: "" }).selected = !this.currentContextId;
+            this.contexts.forEach((c: any) => {
+                const opt = contextSel.createEl("option", { text: c.label, value: String(c.id) });
+                if (this.currentContextId && String(c.id) === String(this.currentContextId)) opt.selected = true;
+            });
+            contextSel.onchange = () => {
+                this.currentContextId = contextSel.value ? Number(contextSel.value) : null;
+            };
+        }
+
         const controlRow = formEl.createDiv();
         controlRow.style.cssText = "display: flex; gap: 6px; align-items: center;";
 
@@ -1291,6 +1395,7 @@ class ProjectsPane {
                 project_id: this.selectedProject.id,
             };
             if (this.currentDueAt) payload.due_at = new Date(this.currentDueAt).toISOString();
+            payload.context_id = this.currentContextId;
 
             try {
                 if (this.editingTaskId) {
@@ -1309,6 +1414,7 @@ class ProjectsPane {
                 this.currentTitle = "";
                 this.currentDesc = "";
                 this.currentDueAt = "";
+                this.currentContextId = null;
                 await this.mount(container);
             } catch (e) {
                 new Notice("Failed to save task");
@@ -1337,10 +1443,11 @@ class ProjectsPane {
                 this.editingTaskId  = task.id;
                 this.currentTitle   = task.title;
                 this.currentDesc    = task.description || "";
-                this.currentStatus  = String(task.status);
-                this.currentDueAt   = task.due_at ? task.due_at.slice(0, 16) : "";
-                this.showTaskForm   = true;
-                this.formJustOpened = true;
+                this.currentStatus    = String(task.status);
+                this.currentDueAt     = task.due_at ? task.due_at.slice(0, 16) : "";
+                this.currentContextId = task.context_id ?? null;
+                this.showTaskForm     = true;
+                this.formJustOpened   = true;
                 this.mount(this.detailContainer!);
             };
 
@@ -1394,6 +1501,26 @@ class ProjectsPane {
                 titleSpan.style.color = "var(--text-muted)";
             }
             nameEl.appendChild(titleSpan);
+
+            // Context badge
+            const contextInfo = task.context_id
+                ? this.contexts.find((c: any) => c.id === task.context_id)
+                : null;
+            if (contextInfo) {
+                const ctxBadge = document.createElement("span");
+                ctxBadge.textContent = contextInfo.label;
+                ctxBadge.style.cssText = [
+                    "font-size: var(--font-ui-smaller)",
+                    "font-weight: 500",
+                    "border-radius: var(--radius-s)",
+                    "padding: 1px 5px",
+                    "white-space: nowrap",
+                    "flex-shrink: 0",
+                    `color: ${contextInfo.colour || 'var(--text-muted)'}`,
+                    `background: ${contextInfo.colour ? contextInfo.colour + '22' : 'var(--background-modifier-border)'}`,
+                ].join("; ");
+                nameEl.appendChild(ctxBadge);
+            }
         });
     }
 }
