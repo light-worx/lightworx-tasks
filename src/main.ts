@@ -699,8 +699,19 @@ class TasksPane {
                     const qs = email
                         ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
                         : '';
-                    await this.plugin.apiRequest(`tasks/${this.editingTaskId}${qs}`, 'PUT', payload);
+                    const updated = await this.plugin.apiRequest(`tasks/${this.editingTaskId}${qs}`, 'PUT', payload);
                     new Notice("Task updated");
+                    // Update the task in both in-memory and persisted cache immediately
+                    // so the correct values show when the form closes, without waiting
+                    // for the background refresh.
+                    const updatedTask = updated ?? { ...payload, id: this.editingTaskId };
+                    this.cachedTasks = this.cachedTasks.map((t: any) =>
+                        t.id === this.editingTaskId ? { ...t, ...updatedTask } : t
+                    );
+                    this.plugin.cachedTasksStore = this.plugin.cachedTasksStore.map((t: any) =>
+                        t.id === this.editingTaskId ? { ...t, ...updatedTask } : t
+                    );
+                    await this.plugin.persistTaskCache(this.plugin.cachedTasksStore);
                 } else {
                     await this.plugin.apiRequest('tasks', 'POST', payload);
                     new Notice("Task added");
@@ -1403,8 +1414,17 @@ class ProjectsPane {
                     const qs = email
                         ? `?assigned_email=${encodeURIComponent(email)}&owner_email=${encodeURIComponent(email)}`
                         : '';
-                    await this.plugin.apiRequest(`tasks/${this.editingTaskId}${qs}`, 'PUT', payload);
+                    const updated = await this.plugin.apiRequest(`tasks/${this.editingTaskId}${qs}`, 'PUT', payload);
                     new Notice("Task updated");
+                    // Update in-memory and persisted cache immediately
+                    const updatedTask = updated ?? { ...payload, id: this.editingTaskId };
+                    this.cachedProjectTasks = this.cachedProjectTasks.map((t: any) =>
+                        t.id === this.editingTaskId ? { ...t, ...updatedTask } : t
+                    );
+                    this.plugin.cachedTasksStore = this.plugin.cachedTasksStore.map((t: any) =>
+                        t.id === this.editingTaskId ? { ...t, ...updatedTask } : t
+                    );
+                    await this.plugin.persistTaskCache(this.plugin.cachedTasksStore);
                 } else {
                     await this.plugin.apiRequest('tasks', 'POST', payload);
                     new Notice("Task added");
