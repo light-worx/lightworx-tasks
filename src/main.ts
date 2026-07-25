@@ -399,7 +399,7 @@ class TasksPane {
         toolbar.style.cssText = "display: flex; align-items: center; gap: 6px;";
 
         const searchIn = toolbar.createEl("input", { type: "text", placeholder: "Search…" });
-        searchIn.style.cssText = "flex: 0 0 90px; height: 26px; font-size: var(--font-ui-small); box-sizing: border-box;";
+        searchIn.style.cssText = "flex: 0 0 50px; height: 26px; font-size: var(--font-ui-small); box-sizing: border-box;";
         searchIn.value = this.searchQuery;
         searchIn.oninput = () => {
             this.searchQuery = searchIn.value.toLowerCase();
