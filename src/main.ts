@@ -689,7 +689,6 @@ class TasksPane {
             };
             if (this.currentProjectId) payload.project_id = this.currentProjectId;
             if (this.currentDueAt)     payload.due_at = new Date(this.currentDueAt).toISOString();
-            // Preserve context_id — pass it through even if null so it isn't dropped
             payload.context_id = this.currentContextId;
 
             try {
@@ -701,9 +700,6 @@ class TasksPane {
                         : '';
                     const updated = await this.plugin.apiRequest(`tasks/${this.editingTaskId}${qs}`, 'PUT', payload);
                     new Notice("Task updated");
-                    // Update the task in both in-memory and persisted cache immediately
-                    // so the correct values show when the form closes, without waiting
-                    // for the background refresh.
                     const updatedTask = updated ?? { ...payload, id: this.editingTaskId };
                     this.cachedTasks = this.cachedTasks.map((t: any) =>
                         t.id === this.editingTaskId ? { ...t, ...updatedTask } : t
@@ -988,7 +984,7 @@ class TasksPane {
                 : null;
             if (contextInfo) {
                 const ctxBadge = document.createElement("span");
-                ctxBadge.textContent = contextInfo.label;
+                ctxBadge.textContent = `@${contextInfo.label}`;
                 ctxBadge.style.cssText = [
                     "font-size: var(--font-ui-smaller)",
                     "font-weight: 500",
@@ -1528,7 +1524,7 @@ class ProjectsPane {
                 : null;
             if (contextInfo) {
                 const ctxBadge = document.createElement("span");
-                ctxBadge.textContent = contextInfo.label;
+                ctxBadge.textContent = `@${contextInfo.label}`;
                 ctxBadge.style.cssText = [
                     "font-size: var(--font-ui-smaller)",
                     "font-weight: 500",
@@ -1597,7 +1593,7 @@ class MyTasksSettingTab extends PluginSettingTab {
 
                 new Setting(containerEl)
                     .setName('Target calendar')
-                    .setDesc('Which calendar to add events to. Defaults to the calendar plugin\'s default.')
+                    .setDesc("Which calendar to add events to. Defaults to the calendar plugin's default.")
                     .addDropdown(dd => {
                         dd.addOption('', `— default (${calPlugin.getDefaultCalendarId?.() || 'none set'}) —`);
                         calendars.forEach((c: any) => dd.addOption(c.id, c.name));
