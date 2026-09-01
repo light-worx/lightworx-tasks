@@ -125,10 +125,7 @@ export default class MyTaskPlugin extends Plugin {
                 // Log the actual API error body so we can see the real message
                 let errorBody: any = response.text;
                 try { errorBody = JSON.parse(response.text); } catch {}
-                console.error(`Tasks API error [${method} ${path}]`, {
-                    status: response.status,
-                    body: errorBody,
-                });
+                console.error(`Tasks API error [${method} ${path}] status=${response.status} body=${JSON.stringify(errorBody)}`);
                 const err: any = new Error(`Request failed, status ${response.status}`);
                 err.status = response.status;
                 err.body = errorBody;
