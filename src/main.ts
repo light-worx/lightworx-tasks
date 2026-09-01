@@ -1404,6 +1404,8 @@ class ProjectsPane {
             if (this.currentDueAt) payload.due_at = new Date(this.currentDueAt).toISOString();
             payload.context_id = this.currentContextId;
 
+            console.log('[Tasks] project task payload:', JSON.stringify(payload));
+
             try {
                 if (this.editingTaskId) {
                     const email = this.plugin.settings.userEmail;
