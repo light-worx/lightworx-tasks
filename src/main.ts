@@ -688,7 +688,7 @@ class TasksPane {
                 status: this.currentStatus,
             };
             if (this.currentProjectId) payload.project_id = this.currentProjectId;
-            if (this.currentDueAt)     payload.due_at = new Date(this.currentDueAt).toISOString();
+            if (this.currentDueAt)     payload.due_at = new Date(this.currentDueAt).toISOString().replace(/\.\d+Z$/, 'Z');
             payload.context_id = this.currentContextId;
 
             try {
@@ -1401,10 +1401,9 @@ class ProjectsPane {
                 status: this.currentStatus,
                 project_id: this.selectedProject.id,
             };
-            if (this.currentDueAt) payload.due_at = new Date(this.currentDueAt).toISOString();
+            if (this.currentDueAt) payload.due_at = new Date(this.currentDueAt).toISOString().replace(/\.\d+Z$/, 'Z');
             payload.context_id = this.currentContextId;
 
-            console.log('[Tasks] project task payload:', JSON.stringify(payload));
 
             try {
                 if (this.editingTaskId) {
