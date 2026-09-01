@@ -125,7 +125,7 @@ export default class MyTaskPlugin extends Plugin {
                 // Log the actual API error body so we can see the real message
                 let errorBody: any = response.text;
                 try { errorBody = JSON.parse(response.text); } catch {}
-                console.error(`Tasks API error [${method} ${path}] status=${response.status} body=${JSON.stringify(errorBody)}`);
+                console.error(`Tasks API error [${method} ${path}]`, { status: response.status, body: errorBody });
                 const err: any = new Error(`Request failed, status ${response.status}`);
                 err.status = response.status;
                 err.body = errorBody;
@@ -685,7 +685,7 @@ class TasksPane {
                 status: this.currentStatus,
             };
             if (this.currentProjectId) payload.project_id = this.currentProjectId;
-            if (this.currentDueAt)     payload.due_at = new Date(this.currentDueAt).toISOString().replace(/\.\d+Z$/, 'Z');
+            if (this.currentDueAt)     payload.due_at = new Date(this.currentDueAt).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
             payload.context_id = this.currentContextId;
 
             try {
@@ -1398,7 +1398,7 @@ class ProjectsPane {
                 status: this.currentStatus,
                 project_id: this.selectedProject.id,
             };
-            if (this.currentDueAt) payload.due_at = new Date(this.currentDueAt).toISOString().replace(/\.\d+Z$/, 'Z');
+            if (this.currentDueAt) payload.due_at = new Date(this.currentDueAt).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
             payload.context_id = this.currentContextId;
 
 
